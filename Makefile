@@ -21,20 +21,20 @@ CC=g++
 CFLAGS=-g -Wall -Wextra -Werror -O -std=c++14 -pthread
 
 rebuild: clean all
-all: twmailer-server twmailer-client
+all: server client
 
 clean:
 	clear
 	rm -f bin/* obj/*
 
-./obj/twmailer-client.o: twmailer-client.c
-	${CC} ${CFLAGS} -o obj/twmailer-client.o twmailer-client.c -c
+./obj/client.o: client.c
+	${CC} ${CFLAGS} -o obj/client.o client.c -c
 
-./obj/twmailer-server.o: twmailer-server.c
-	${CC} ${CFLAGS} -o obj/twmailer-server.o twmailer-server.c -c 
+./obj/server.o: server.c
+	${CC} ${CFLAGS} -o obj/server.o server.c -c 
 
-server: ./obj/twmailer-server.o
-	${CC} ${CFLAGS} -o server obj/twmailer-server.o
+server: ./obj/server.o
+	${CC} ${CFLAGS} -o server obj/server.o
 
-client: ./obj/twmailer-client.o
-	${CC} ${CFLAGS} -o client obj/twmailer-client.o
+client: ./obj/client.o
+	${CC} ${CFLAGS} -o client obj/client.o

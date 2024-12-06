@@ -6,11 +6,19 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 ///////////////////////////////////////////////////////////////////////////////
 
-#define BUF 1024
+#define MESSAGE 1024
+#define BUF 5
+#define USERNAME 20
 #define PORT 6543
+
+///////////////////////////////////////////////////////////////////////////////
+
+void checkCommand(char message[], char buffer[]);
+char* appendArray(char *message, char *append);
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -40,7 +48,15 @@ int main(int argc, char *argv[])
    memset(&address, 0, sizeof(address)); // init storage with 0
    address.sin_family = AF_INET;         // IPv4
    // https://man7.org/linux/man-pages/man3/htons.3.html
-   address.sin_port = htons(PORT);
+   //++++
+   if(argc < 2)
+   {
+      address.sin_port = htons(PORT);
+   }
+   else
+   {
+      address.sin_port = htons(atoi(argv[2]));
+   }
    // https://man7.org/linux/man-pages/man3/inet_aton.3.html
    if (argc < 2)
    {
@@ -89,20 +105,18 @@ int main(int argc, char *argv[])
    {
       printf(">> ");
       if (fgets(buffer, BUF - 1, stdin) != NULL)
-      {
-         int size = strlen(buffer);
-         // remove new-line signs from string at the end
-         if (buffer[size - 2] == '\r' && buffer[size - 1] == '\n')
-         {
-            size -= 2;
-            buffer[size] = 0;
+      {         
+         //command to lowercase for case instensitivity
+         for(int i = 0; buffer[i]; i++){
+            buffer[i] = tolower(buffer[i]);
          }
-         else if (buffer[size - 1] == '\n')
-         {
-            --size;
-            buffer[size] = 0;
-         }
+
+         //quit case
          isQuit = strcmp(buffer, "quit") == 0;
+
+         //check commands and create request
+         char message[MESSAGE];
+         checkCommand(message, buffer);
 
          //////////////////////////////////////////////////////////////////////
          // SEND DATA
@@ -177,4 +191,39 @@ int main(int argc, char *argv[])
    }
 
    return EXIT_SUCCESS;
+}
+
+void checkCommand(char message[], char buffer[])
+{
+   char username[USERNAME];
+
+   appendArray(message, buffer);
+
+   if(strcmp(buffer, "send") == 0)
+   {
+      printf("A");
+   }
+   else if(strcmp(buffer, "list") == 0)
+   {
+      printf("+> ");
+      if (fgets(username, USERNAME - 1, stdin) != NULL)
+      {
+         appendArray(message, username);
+      }
+   }
+   else if(strcmp(buffer, "read") == 0)
+   {
+      printf("C");
+   }
+   else if(strcmp(buffer, "del") == 0)
+   {
+      printf("D");
+   }
+}
+
+char *appendArray(char *message, char *append)
+{
+   //temporary behaviour to avoid warnings
+   message = append;
+   return message;
 }
