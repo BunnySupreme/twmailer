@@ -16,6 +16,7 @@
 
 #define BUF 1024
 #define USER_LENGTH 8
+#define PASSWORD_LENGTH 80
 #define SUBJECT_LENGTH 80
 #define PORT 6543
 
@@ -162,12 +163,7 @@ int main(int argc, char *argv[])
          else
          {
             buffer[size] = '\0';
-            printf("<< %s\n", buffer); // ignore error
-            if (strcmp("OK", buffer) != 0)
-            {
-               fprintf(stderr, "<< Server error occured, abort\n");
-               break;
-            }
+            printf("<< %s\n", buffer);
          }
       }
    } while (!isQuit);
@@ -195,7 +191,31 @@ void checkCommand(string &message)
 {
    string buffer;
 
-   if(message == "SEND")
+   if(message == "LOGIN")
+   {
+      //Credentials
+      cout << "LDAP username: ";
+      getline(cin, buffer, '\n');
+      if(buffer.size() > USER_LENGTH)
+      {
+         cout << "ERROR: Username must be no longer than 8 characters!" << endl;
+         message = "";
+         return;
+      }
+      message = message + "\n" + buffer;
+
+      cout << "Password: ";
+      getline(cin, buffer, '\n');
+      if(buffer.size() > PASSWORD_LENGTH)
+      {
+         cout << "ERROR: Username must be no longer than 80 characters!" << endl;
+         message = "";
+         return;
+      }
+      message = message + "\n" + buffer;
+   }
+
+   else if(message == "SEND")
    {
       //Sender and Reciever
       vector<string> helper = {"Sender: ", "Reciever: "};
@@ -205,7 +225,7 @@ void checkCommand(string &message)
          getline(cin, buffer, '\n');
          if(buffer.size() > USER_LENGTH)
          {
-            cout << "ERROR: Username must be shorter than 8 characters!" << endl;
+            cout << "ERROR: Username must be no longer than 8 characters!" << endl;
             message = "";
             return;
          }
@@ -240,7 +260,7 @@ void checkCommand(string &message)
       return;
    }
    
-   if(message == "LIST")
+   else if(message == "LIST")
    {
       cout << "Username: ";
       getline(cin, buffer, '\n');
@@ -254,7 +274,7 @@ void checkCommand(string &message)
       return;
    }
    
-   if(message == "READ" || message == "DEL")
+   else if(message == "READ" || message == "DEL")
    {
       cout << "Username: ";
       getline(cin, buffer, '\n');
@@ -272,8 +292,15 @@ void checkCommand(string &message)
       return;
    }
 
-   if(message == "QUIT")
+   else if(message == "QUIT")
    {
       return;
    }
+
+   else
+   {
+      message = "";
+   }
+
+   return;
 }

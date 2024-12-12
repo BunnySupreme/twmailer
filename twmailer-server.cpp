@@ -12,6 +12,9 @@
 
 #define BUF 1024
 #define PORT 6543
+#define USER_LENGTH 8
+#define PASSWORD_LENGTH 80
+#define SUBJECT_LENGTH 80
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -33,7 +36,7 @@ typedef enum {
 
 void *clientCommunication(void *data);
 void signalHandler(int sig);
-CommandType filterCommandType(const char *command);
+CommandType filterCommandType(const char *firstLine);
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -176,6 +179,13 @@ void *clientCommunication(void *data)
    char buffer[BUF];
    int size;
    int *current_socket = (int *)data;
+   bool logged_in = false;
+   char username[USER_LENGTH];
+   char password[PASSWORD_LENGTH];
+
+   char *user_from_login_attempt = NULL;
+   char *pass_from_login_attempt = NULL;
+   
 
    ////////////////////////////////////////////////////////////////////////////
    // SEND welcome message
@@ -185,6 +195,7 @@ void *clientCommunication(void *data)
       perror("send failed");
       return NULL;
    }
+   memset(buffer, 0, BUF);
 
    do
    {
@@ -203,65 +214,89 @@ void *clientCommunication(void *data)
          }
          break;
       }
-
       if (size == 0)
       {
          printf("Client closed remote socket\n"); // ignore error
          break;
       }
 
-      // remove ugly debug message, because of the sent newline of client
-      if (buffer[size - 2] == '\r' && buffer[size - 1] == '\n')
-      {
-         size -= 2;
-      }
-      else if (buffer[size - 1] == '\n')
-      {
-         --size;
-      }
+      printf("Message received: \n %s\n", buffer); // ignore error
 
-      buffer[size] = '\0';
-      printf("Message received: %s\n", buffer); // ignore error
+      //Get first line
+      char *firstLine = strtok(buffer, "\n");
 
       // Filter the command type
-      CommandType commandType = filterCommandType(buffer);
+      CommandType commandType = filterCommandType(firstLine);
 
 
        // Handle the command
-        switch (commandType)
-        {
-            case LOGIN:
-                if (send(*current_socket, "Login command received\n", 23, 0) == -1)
-                {
-                    perror("send LOGIN response failed");
-                }
-                break;
 
-            case QUIT:
-                shutdown(*current_socket, SHUT_RDWR);
-                close(*current_socket);
-                *current_socket = -1;
-                return NULL; // Exit the function after handling QUIT
-                break;
+      switch (commandType)
+      {
+         case LOGIN:
+            // Ensure we don't read more than the allocated space
 
-            case INVALID_COMMAND:
-            default:
-                if (send(*current_socket, "ERR: Unknown command\n", 21, 0) == -1)
-                {
-                    perror("send ERR response failed");
-                }
-                break;
-        }
-
-        // Send an OK acknowledgment for valid commands
-        if (commandType != INVALID_COMMAND && commandType != QUIT)
-        {
-            if (send(*current_socket, "OK\n", 3, 0) == -1)
+            user_from_login_attempt = strtok(NULL, "\n");
+            pass_from_login_attempt = strtok(NULL, "\n");
+            if (user_from_login_attempt != NULL && pass_from_login_attempt != NULL)
             {
-                perror("send OK response failed");
-                return NULL;
+               // Safely copy the username and password using strncpy
+               strncpy(username, user_from_login_attempt, USER_LENGTH - 1);
+               username[USER_LENGTH - 1] = '\0'; // Null-terminate to be safe
+               printf("Username set to: %s\n", username); 
+
+               strncpy(password, pass_from_login_attempt, PASSWORD_LENGTH - 1);
+               password[PASSWORD_LENGTH - 1] = '\0'; // Null-terminate to be safe
+               printf("Password set to: %s\n", password); 
+
+               logged_in = true;
+               printf("User is now logged in\n");
+
+               if (send(*current_socket, "OK\n", 3, 0) == -1)
+               {
+                  perror("send LOGIN response failed");
+               }
+               else
+               {
+                  printf("Response sent: OK\n"); // ignore error
+               }
             }
-        }
+            else
+            {
+               if (send(*current_socket, "ERR\n", 3, 0) == -1)
+               {
+                  perror("send ERR response failed");
+               }
+            }
+            break;
+         case SEND:
+            if(!logged_in)
+            {
+               if (send(*current_socket, "ERR\n", 3, 0) == -1)
+               {
+                  perror("send ERR response failed");
+               }
+               break;
+            }
+            break;
+         case QUIT:
+            shutdown(*current_socket, SHUT_RDWR);
+            close(*current_socket);
+            *current_socket = -1;
+            printf("Server closed socket\n");
+            return NULL; // Exit the function after handling QUIT
+            break;
+
+         case INVALID_COMMAND:
+         default:
+            if (send(*current_socket, "ERR\n", 3, 0) == -1)
+            {
+               perror("send ERR response failed");
+            }
+            break;
+      }
+
+       memset(buffer, 0, BUF);
 
     } while (!abortRequested);
 
@@ -325,29 +360,29 @@ void signalHandler(int sig)
    }
 }
 
-CommandType filterCommandType(const char *command)
+CommandType filterCommandType(const char *firstLine)
 {
-    if (strcmp(command, "LOGIN") == 0)
+    if (strcmp(firstLine, "LOGIN") == 0)
     {
         return LOGIN;
     }
-    else if (strcmp(command, "SEND") == 0)
+    else if (strcmp(firstLine, "SEND") == 0)
     {
         return SEND;
     }
-    else if (strcmp(command, "LIST") == 0)
+    else if (strcmp(firstLine, "LIST") == 0)
     {
         return LIST;
     }
-    else if (strcmp(command, "READ") == 0)
+    else if (strcmp(firstLine, "READ") == 0)
     {
         return READ;
     }
-     else if (strcmp(command, "DEL") == 0)
+     else if (strcmp(firstLine, "DEL") == 0)
     {
         return DEL;
     }
-    else if (strcmp(command, "QUIT") == 0)
+    else if (strcmp(firstLine, "QUIT") == 0)
     {
         return QUIT;
     }
