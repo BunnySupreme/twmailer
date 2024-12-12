@@ -19,10 +19,21 @@ int abortRequested = 0;
 int create_socket = -1;
 int new_socket = -1;
 
+typedef enum {
+    LOGIN,
+    SEND,
+    LIST,
+    READ,
+    DEL,
+    QUIT,
+    INVALID_COMMAND
+} CommandType;
+
 ///////////////////////////////////////////////////////////////////////////////
 
 void *clientCommunication(void *data);
 void signalHandler(int sig);
+CommandType filterCommandType(const char *command);
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -211,14 +222,48 @@ void *clientCommunication(void *data)
 
       buffer[size] = '\0';
       printf("Message received: %s\n", buffer); // ignore error
-      //Check if there is a SEND, etc.
 
-      if (send(*current_socket, "OK", 3, 0) == -1)
-      {
-         perror("send answer failed");
-         return NULL;
-      }
-   } while (strcmp(buffer, "quit") != 0 && !abortRequested);
+      // Filter the command type
+      CommandType commandType = filterCommandType(buffer);
+
+
+       // Handle the command
+        switch (commandType)
+        {
+            case LOGIN:
+                if (send(*current_socket, "Login command received\n", 23, 0) == -1)
+                {
+                    perror("send LOGIN response failed");
+                }
+                break;
+
+            case QUIT:
+                shutdown(*current_socket, SHUT_RDWR);
+                close(*current_socket);
+                *current_socket = -1;
+                return NULL; // Exit the function after handling QUIT
+                break;
+
+            case INVALID_COMMAND:
+            default:
+                if (send(*current_socket, "ERR: Unknown command\n", 21, 0) == -1)
+                {
+                    perror("send ERR response failed");
+                }
+                break;
+        }
+
+        // Send an OK acknowledgment for valid commands
+        if (commandType != INVALID_COMMAND && commandType != QUIT)
+        {
+            if (send(*current_socket, "OK\n", 3, 0) == -1)
+            {
+                perror("send OK response failed");
+                return NULL;
+            }
+        }
+
+    } while (!abortRequested);
 
    // closes/frees the descriptor if not already
    if (*current_socket != -1)
@@ -278,4 +323,36 @@ void signalHandler(int sig)
    {
       exit(sig);
    }
+}
+
+CommandType filterCommandType(const char *command)
+{
+    if (strcmp(command, "LOGIN") == 0)
+    {
+        return LOGIN;
+    }
+    else if (strcmp(command, "SEND") == 0)
+    {
+        return SEND;
+    }
+    else if (strcmp(command, "LIST") == 0)
+    {
+        return LIST;
+    }
+    else if (strcmp(command, "READ") == 0)
+    {
+        return READ;
+    }
+     else if (strcmp(command, "DEL") == 0)
+    {
+        return DEL;
+    }
+    else if (strcmp(command, "QUIT") == 0)
+    {
+        return QUIT;
+    }
+    else
+    {
+        return INVALID_COMMAND;
+    }
 }
