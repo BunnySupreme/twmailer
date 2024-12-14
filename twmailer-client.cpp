@@ -218,19 +218,16 @@ void checkCommand(string &message)
    else if(message == "SEND")
    {
       //Sender and Reciever
-      vector<string> helper = {"Sender: ", "Reciever: "};
-      for(size_t i = 0; i < helper.size(); i++)
+      cout << "Receiver: ";
+      getline(cin, buffer, '\n');
+      if(buffer.size() > USER_LENGTH)
       {
-         cout << helper[i];
-         getline(cin, buffer, '\n');
-         if(buffer.size() > USER_LENGTH)
-         {
-            cout << "ERROR: Username must be no longer than 8 characters!" << endl;
-            message = "";
-            return;
-         }
-         message = message + "\n" + buffer;
+         cout << "ERROR: Username must be no longer than 8 characters!" << endl;
+         message = "";
+         return;
       }
+         message = message + "\n" + buffer;
+      
 
       //Subject
       cout << "Subject: ";

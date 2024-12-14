@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -185,7 +187,9 @@ void *clientCommunication(void *data)
 
    char *user_from_login_attempt = NULL;
    char *pass_from_login_attempt = NULL;
-   
+   char* receiver = NULL;
+   struct stat st;
+   memset(&st, 0, sizeof(st));
 
    ////////////////////////////////////////////////////////////////////////////
    // SEND welcome message
@@ -220,7 +224,7 @@ void *clientCommunication(void *data)
          break;
       }
 
-      printf("Message received: \n %s\n", buffer); // ignore error
+      printf("\nMessage received: \n%s\n\n", buffer); // ignore error
 
       //Get first line
       char *firstLine = strtok(buffer, "\n");
@@ -277,6 +281,19 @@ void *clientCommunication(void *data)
                   perror("send ERR response failed");
                }
                break;
+            }
+            receiver = strtok(NULL, "\n");
+            //if directory for receiver does not exist, create directory
+            if (stat(receiver, &st) == -1) {
+               mkdir(receiver, 0700);
+            }
+            if (send(*current_socket, "OK\n", 3, 0) == -1)
+            {
+               perror("send LOGIN response failed");
+            }
+            else
+            {
+               printf("Response sent: OK\n"); // ignore error
             }
             break;
          case QUIT:
