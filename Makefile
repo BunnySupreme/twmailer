@@ -18,7 +18,13 @@ CC=g++
 #           of object code produced by the compiler or that of libraries supplied with it. 
 #           These are HP-UX specific flags.
 #############################################################################################
+#############################################################################################
+
+# Compiler Flags: These are only for compiling and do not include -luuid for the linker.
 CFLAGS=-g -Wall -Wextra -Werror -O -std=c++14 -pthread
+
+# Linker flags: Use this only when linking the final binary.
+LDFLAGS=-luuid
 
 rebuild: clean all
 all: ./bin/server ./bin/client
@@ -34,7 +40,7 @@ clean:
 	${CC} ${CFLAGS} -o obj/twmailer-server.o twmailer-server.cpp -c 
 
 ./bin/server: ./obj/twmailer-server.o
-	${CC} ${CFLAGS} -o bin/server obj/twmailer-server.o
+	${CC} ${CFLAGS} -o bin/server obj/twmailer-server.o ${LDFLAGS}
 
 ./bin/client: ./obj/twmailer-client.o
 	${CC} ${CFLAGS} -o bin/client obj/twmailer-client.o

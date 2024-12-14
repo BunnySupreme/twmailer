@@ -5,10 +5,12 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
+#include <string>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <uuid/uuid.h>
+#include <cstring>  // For memset
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -17,6 +19,9 @@
 #define USER_LENGTH 8
 #define PASSWORD_LENGTH 80
 #define SUBJECT_LENGTH 80
+#define RECV_DIR 16
+
+using namespace std;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -185,11 +190,17 @@ void *clientCommunication(void *data)
    char username[USER_LENGTH];
    char password[PASSWORD_LENGTH];
 
-   char *user_from_login_attempt = NULL;
-   char *pass_from_login_attempt = NULL;
-   char* receiver = NULL;
+   char *user_from_login_attempt;
+   char *pass_from_login_attempt;
+   char* receiver;
+   char* subject;
+   char *line;
+   string message;
    struct stat st;
    memset(&st, 0, sizeof(st));
+   const char* baseDirectory = "Emails";
+   char receiverDir[RECV_DIR];
+
 
    ////////////////////////////////////////////////////////////////////////////
    // SEND welcome message
@@ -284,9 +295,77 @@ void *clientCommunication(void *data)
             }
             receiver = strtok(NULL, "\n");
             //if directory for receiver does not exist, create directory
-            if (stat(receiver, &st) == -1) {
-               mkdir(receiver, 0700);
+            snprintf(receiverDir, sizeof(receiverDir), "%s/%s", baseDirectory, receiver);
+            printf("We will now check if directory exists\n");
+            if (stat(receiverDir, &st) == -1) {
+               if (mkdir(receiverDir, 0700) == -1) {
+                     perror("mkdir failed");
+                     if (send(*current_socket, "ERR\n", 4, 0) == -1) {
+                        perror("send ERR response failed");
+                     }
+                     break;
+               }
             }
+            printf("Directory exists\n");
+            fflush(stdout);
+            // Extract subject
+            subject = strtok(NULL, "\n");
+            printf("subject parsed\n");
+            fflush(stdout);
+
+
+            // Get the message until a line containing only '.' is received
+            message = "";
+            do
+            {
+               line = strtok(NULL, "\n");
+               if (strcmp(line, ".") == 0) {
+                  printf("End of message received.\n");
+                  break;
+               }
+               message = message + "\n" + line;     
+            } while (line!= NULL);
+
+            if (!subject || message.empty()) {
+               if (send(*current_socket, "ERR\n", 4, 0) == -1) {
+                  perror("send ERR response failed");
+               }
+               break;
+            }
+
+            printf("Message and subject parsed\n");
+            fflush(stdout);
+
+            // Enclose the FILE* declaration in a block to limit its scope
+            {
+               // Generate a random GUID for the filename
+               uuid_t uuid;
+               char uuid_str[37];
+               uuid_generate(uuid);
+               uuid_unparse(uuid, uuid_str);
+
+               // Generate file path
+               char file_path[256];
+               snprintf(file_path, sizeof(file_path), "%s/%s.txt", receiverDir, uuid_str);
+
+               //open file
+               FILE *file = fopen(file_path, "w");
+               if (!file) {
+                     perror("fopen failed");
+                     if (send(*current_socket, "ERR\n", 4, 0) == -1) {
+                        perror("send ERR response failed");
+                     }
+                     break;
+               }
+
+               //write in file
+               fprintf(file, "Sender: %s\n", username);
+               fprintf(file, "Subject: %s\n", subject);
+               fprintf(file, "Message:\n%s\n", message.c_str());
+               //close
+               fclose(file);
+            }
+            // Send success response
             if (send(*current_socket, "OK\n", 3, 0) == -1)
             {
                perror("send LOGIN response failed");

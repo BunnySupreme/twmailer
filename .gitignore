@@ -55,5 +55,8 @@ dkms.conf
 bin/*
 obj/*
 
+# Testing stuff
+Emails/*
+
 # Keep folders with .gitkeep
 !.gitkeep
