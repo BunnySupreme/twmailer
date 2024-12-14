@@ -361,7 +361,7 @@ void *clientCommunication(void *data)
                //write in file
                fprintf(file, "Sender: %s\n", username);
                fprintf(file, "Subject: %s\n", subject);
-               fprintf(file, "Message:\n%s\n", message.c_str());
+               fprintf(file, "Message:%s\n", message.c_str());
                //close
                fclose(file);
             }
