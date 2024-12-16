@@ -395,7 +395,11 @@ void list(int *current_socket, string username, string baseDirectory)
    while((entry = readdir(dir)) != NULL)
    {
       string currentFile = path + "/" + entry->d_name;
-      stat(currentFile.c_str(), &st);
+      if (stat(currentFile.c_str(), &st) == -1)
+      {
+         perror("stat failed");
+         continue; // Skip this entry and proceed to the next
+      }
       if(S_ISREG(st.st_mode))
       {
          ifstream file(currentFile);
@@ -570,7 +574,11 @@ string findFile(int *current_socket, string path, int position)
         }
 
         string currentFile = path + "/" + entry->d_name;
-        stat(currentFile.c_str(), &st);
+        if (stat(currentFile.c_str(), &st) == -1)
+         {
+            perror("stat failed");
+            continue; // Skip this entry and proceed to the next
+         }
 
         if (S_ISREG(st.st_mode))
         {
