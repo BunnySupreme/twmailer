@@ -201,6 +201,15 @@ void clientCommunication(void *data)
          logged_in = login(current_socket, username);
       }
 
+      else if(firstLine == "QUIT")
+      {
+            shutdown(*current_socket, SHUT_RDWR);
+            close(*current_socket);
+            *current_socket = -1;
+            printf("Server closed socket\n");
+            return; // Exit the function after handling QUIT
+      }
+      
       else if(!logged_in)
       {
          respond(current_socket, "ERR\n");
@@ -223,14 +232,6 @@ void clientCommunication(void *data)
          else if(firstLine == "DEL")
          {
             del(current_socket, username, baseDirectory);
-         }
-         else if(firstLine == "QUIT")
-         {
-               shutdown(*current_socket, SHUT_RDWR);
-               close(*current_socket);
-               *current_socket = -1;
-               printf("Server closed socket\n");
-               return; // Exit the function after handling QUIT
          }
          else
          {
