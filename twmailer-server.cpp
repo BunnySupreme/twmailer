@@ -1,49 +1,8 @@
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string>
-#include <signal.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <uuid/uuid.h>
-#include <cstring>  // For memset
-
-///////////////////////////////////////////////////////////////////////////////
-
-#define BUF 1024
-#define PORT 6543
-#define USER_LENGTH 8
-#define PASSWORD_LENGTH 80
-#define SUBJECT_LENGTH 80
-#define RECV_DIR 16
-
-using namespace std;
-
-///////////////////////////////////////////////////////////////////////////////
+#include "twmailer-server.h"
 
 int abortRequested = 0;
 int create_socket = -1;
 int new_socket = -1;
-
-typedef enum {
-    LOGIN,
-    SEND,
-    LIST,
-    READ,
-    DEL,
-    QUIT,
-    INVALID_COMMAND
-} CommandType;
-
-///////////////////////////////////////////////////////////////////////////////
-
-void *clientCommunication(void *data);
-void signalHandler(int sig);
-CommandType filterCommandType(const char *firstLine);
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -125,6 +84,14 @@ int main(void)
       return EXIT_FAILURE;
    }
 
+   // create directory for emails
+   const char *directoryName = "Emails";
+   struct stat st;
+   if(stat(directoryName, &st) != 0)
+   {
+      mkdir(directoryName, 0700);
+   }
+
    while (!abortRequested)
    {
       /////////////////////////////////////////////////////////////////////////
@@ -160,7 +127,7 @@ int main(void)
       printf("Client connected from %s:%d...\n",
              inet_ntoa(cliaddress.sin_addr),
              ntohs(cliaddress.sin_port));
-      clientCommunication(&new_socket); // returnValue can be ignored
+      clientCommunication(&new_socket);
       new_socket = -1;
    }
 
@@ -181,35 +148,23 @@ int main(void)
    return EXIT_SUCCESS;
 }
 
-void *clientCommunication(void *data)
+//====================================================================================================================
+
+void clientCommunication(void *data)
 {
    char buffer[BUF];
    int size;
    int *current_socket = (int *)data;
    bool logged_in = false;
-   char username[USER_LENGTH];
-   char password[PASSWORD_LENGTH];
-
-   char *user_from_login_attempt;
-   char *pass_from_login_attempt;
-   char* receiver;
-   char* subject;
-   char *line;
-   string message;
-   struct stat st;
-   memset(&st, 0, sizeof(st));
    const char* baseDirectory = "Emails";
-   char receiverDir[RECV_DIR];
 
+   string username;
+   string password;
 
    ////////////////////////////////////////////////////////////////////////////
    // SEND welcome message
    strcpy(buffer, "Welcome to myserver!\r\nPlease enter your commands...\r\n");
-   if (send(*current_socket, buffer, strlen(buffer), 0) == -1)
-   {
-      perror("send failed");
-      return NULL;
-   }
+   respond(current_socket, buffer);
    memset(buffer, 0, BUF);
 
    do
@@ -235,166 +190,58 @@ void *clientCommunication(void *data)
          break;
       }
 
-      printf("\nMessage received: \n%s\n\n", buffer); // ignore error
+      cout << endl << "Message recieved: " << endl << buffer << endl << endl;
 
       //Get first line
-      char *firstLine = strtok(buffer, "\n");
+      string firstLine = strtok(buffer, "\n");
 
-      // Filter the command type
-      CommandType commandType = filterCommandType(firstLine);
-
-
-       // Handle the command
-
-      switch (commandType)
+      // Handle the command
+      if(firstLine == "LOGIN") 
       {
-         case LOGIN:
-            // Ensure we don't read more than the allocated space
-
-            user_from_login_attempt = strtok(NULL, "\n");
-            pass_from_login_attempt = strtok(NULL, "\n");
-            if (user_from_login_attempt != NULL && pass_from_login_attempt != NULL)
-            {
-               // Safely copy the username and password using strncpy
-               strncpy(username, user_from_login_attempt, USER_LENGTH - 1);
-               username[USER_LENGTH - 1] = '\0'; // Null-terminate to be safe
-               printf("Username set to: %s\n", username); 
-
-               strncpy(password, pass_from_login_attempt, PASSWORD_LENGTH - 1);
-               password[PASSWORD_LENGTH - 1] = '\0'; // Null-terminate to be safe
-               printf("Password set to: %s\n", password); 
-
-               logged_in = true;
-               printf("User is now logged in\n");
-
-               if (send(*current_socket, "OK\n", 3, 0) == -1)
-               {
-                  perror("send LOGIN response failed");
-               }
-               else
-               {
-                  printf("Response sent: OK\n"); // ignore error
-               }
-            }
-            else
-            {
-               if (send(*current_socket, "ERR\n", 3, 0) == -1)
-               {
-                  perror("send ERR response failed");
-               }
-            }
-            break;
-         case SEND:
-            if(!logged_in)
-            {
-               if (send(*current_socket, "ERR\n", 3, 0) == -1)
-               {
-                  perror("send ERR response failed");
-               }
-               break;
-            }
-            receiver = strtok(NULL, "\n");
-            //if directory for receiver does not exist, create directory
-            snprintf(receiverDir, sizeof(receiverDir), "%s/%s", baseDirectory, receiver);
-            printf("We will now check if directory exists\n");
-            if (stat(receiverDir, &st) == -1) {
-               if (mkdir(receiverDir, 0700) == -1) {
-                     perror("mkdir failed");
-                     if (send(*current_socket, "ERR\n", 4, 0) == -1) {
-                        perror("send ERR response failed");
-                     }
-                     break;
-               }
-            }
-            printf("Directory exists\n");
-            fflush(stdout);
-            // Extract subject
-            subject = strtok(NULL, "\n");
-            printf("subject parsed\n");
-            fflush(stdout);
-
-
-            // Get the message until a line containing only '.' is received
-            message = "";
-            do
-            {
-               line = strtok(NULL, "\n");
-               if (strcmp(line, ".") == 0) {
-                  printf("End of message received.\n");
-                  break;
-               }
-               message = message + "\n" + line;     
-            } while (line!= NULL);
-
-            if (!subject || message.empty()) {
-               if (send(*current_socket, "ERR\n", 4, 0) == -1) {
-                  perror("send ERR response failed");
-               }
-               break;
-            }
-
-            printf("Message and subject parsed\n");
-            fflush(stdout);
-
-            // Enclose the FILE* declaration in a block to limit its scope
-            {
-               // Generate a random GUID for the filename
-               uuid_t uuid;
-               char uuid_str[37];
-               uuid_generate(uuid);
-               uuid_unparse(uuid, uuid_str);
-
-               // Generate file path
-               char file_path[256];
-               snprintf(file_path, sizeof(file_path), "%s/%s.txt", receiverDir, uuid_str);
-
-               //open file
-               FILE *file = fopen(file_path, "w");
-               if (!file) {
-                     perror("fopen failed");
-                     if (send(*current_socket, "ERR\n", 4, 0) == -1) {
-                        perror("send ERR response failed");
-                     }
-                     break;
-               }
-
-               //write in file
-               fprintf(file, "Sender: %s\n", username);
-               fprintf(file, "Subject: %s\n", subject);
-               fprintf(file, "Message:%s\n", message.c_str());
-               //close
-               fclose(file);
-            }
-            // Send success response
-            if (send(*current_socket, "OK\n", 3, 0) == -1)
-            {
-               perror("send LOGIN response failed");
-            }
-            else
-            {
-               printf("Response sent: OK\n"); // ignore error
-            }
-            break;
-         case QUIT:
-            shutdown(*current_socket, SHUT_RDWR);
-            close(*current_socket);
-            *current_socket = -1;
-            printf("Server closed socket\n");
-            return NULL; // Exit the function after handling QUIT
-            break;
-
-         case INVALID_COMMAND:
-         default:
-            if (send(*current_socket, "ERR\n", 3, 0) == -1)
-            {
-               perror("send ERR response failed");
-            }
-            break;
+         logged_in = login(current_socket, username);
       }
 
-       memset(buffer, 0, BUF);
+      else if(!logged_in)
+      {
+         respond(current_socket, "ERR\n");
+      }
 
-    } while (!abortRequested);
+      else
+      {
+         if(firstLine == "SEND")
+         {
+            send(current_socket, username, baseDirectory);
+         }
+         else if(firstLine == "LIST")
+         {
+            list(current_socket, username, baseDirectory);
+         }
+         else if(firstLine == "READ")
+         {
+            read(current_socket, username, baseDirectory);
+         }
+         else if(firstLine == "DEL")
+         {
+            del(current_socket, username, baseDirectory);
+         }
+         else if(firstLine == "QUIT")
+         {
+               shutdown(*current_socket, SHUT_RDWR);
+               close(*current_socket);
+               *current_socket = -1;
+               printf("Server closed socket\n");
+               return; // Exit the function after handling QUIT
+         }
+         else
+         {
+            respond(current_socket, "ERR\n");
+         }
+      }
+
+      memset(buffer, 0, BUF);
+
+   }
+   while (!abortRequested);
 
    // closes/frees the descriptor if not already
    if (*current_socket != -1)
@@ -409,9 +256,223 @@ void *clientCommunication(void *data)
       }
       *current_socket = -1;
    }
-
-   return NULL;
 }
+
+//====================================================================================================================
+
+bool login(int *current_socket, string &username)
+{
+   bool logged_in = false;
+   string password;
+
+   // Ensure we don't read more than the allocated space
+   username = strtok(NULL, "\n");
+   password = strtok(NULL, "\n");
+   if (username != "" && password != "")
+   {
+      cout << "Username set to: " << username << endl;
+      cout << "Password set to: " << password << endl;
+
+      logged_in = true;
+      cout << "User is now logged in" << endl;
+
+      respond(current_socket, "OK\n");
+   }
+   else
+   {
+      respond(current_socket, "ERR\n");
+   }
+
+   return logged_in;
+}
+
+//====================================================================================================================
+
+void send(int *current_socket, string username, const char* baseDirectory)
+{
+   char *receiver;
+   char *subject;
+   char *line;
+   string message;
+   struct stat st;
+   memset(&st, 0, sizeof(st));
+   char receiverDir[RECV_DIR];
+
+   receiver = strtok(NULL, "\n");
+   //if directory for receiver does not exist, create directory
+   snprintf(receiverDir, sizeof(receiverDir), "%s/%s", baseDirectory, receiver);
+   printf("We will now check if directory exists\n");
+   if (stat(receiverDir, &st) == -1)
+   {
+      if (mkdir(receiverDir, 0700) == -1)
+      {
+         perror("mkdir failed");
+         respond(current_socket, "ERR\n");
+         return;
+      }
+   }
+   printf("Directory exists\n");
+   fflush(stdout);
+   // Extract subject
+   subject = strtok(NULL, "\n");
+   printf("subject parsed\n");
+   fflush(stdout);
+
+   // Get the message until a line containing only '.' is received
+   message = "";
+   do
+   {
+      line = strtok(NULL, "\n");
+      if (strcmp(line, ".") == 0)
+      {
+         printf("End of message received.\n");
+         break;
+      }
+      message = message + "\n" + line;     
+   }
+   while (line!= NULL);
+
+   if (!subject || message.empty())
+   {
+      respond(current_socket, "ERR\n");
+      return;
+   }
+
+   printf("Message and subject parsed\n");
+   fflush(stdout);
+
+   // Enclose the FILE* declaration in a block to limit its scope
+   {
+      // Generate a random GUID for the filename
+      uuid_t uuid;
+      char uuid_str[37];
+      uuid_generate(uuid);
+      uuid_unparse(uuid, uuid_str);
+
+      // Generate file path
+      char file_path[256];
+      snprintf(file_path, sizeof(file_path), "%s/%s.txt", receiverDir, uuid_str);
+
+      //open file
+      FILE *file = fopen(file_path, "w");
+      if (!file) {
+         perror("fopen failed");
+         respond(current_socket, "ERR\n");
+         return;
+      }
+
+      //write and close file
+      fprintf(file, "Sender: %s\n", username.c_str());
+      fprintf(file, "Subject: %s\n", subject);
+      fprintf(file, "Message:%s\n", message.c_str());
+      fclose(file);
+   }
+   // Send success response
+   respond(current_socket, "OK\n");
+}
+
+//====================================================================================================================
+
+void list(int *current_socket, string username, string baseDirectory)
+{
+   string path = baseDirectory + "/" + username;
+
+   DIR *dir = opendir(path.c_str());
+   if(dir == NULL)
+   {
+      perror("directory does not exist");
+      respond(current_socket, "ERR\n");
+      return;
+   }
+
+   struct dirent *entry;
+   struct stat st;
+   int file_number = 0;
+   string response;
+
+   while((entry = readdir(dir)) != NULL)
+   {
+      string currentFile = path + "/" + entry->d_name;
+      stat(currentFile.c_str(), &st);
+      if(S_ISREG(st.st_mode))
+      {
+         ifstream file(currentFile);
+         string line;
+
+         //file must exist
+         if(!file.is_open())
+         {
+            perror("unable to open file");
+            respond(current_socket, "ERR\n");
+            return;
+         }
+
+         for(int i = 0; i < 2; i++)
+         {
+            getline(file, line);
+         }
+
+         size_t delpos = line.find(" ");
+         string subject = line.substr(delpos + 1);
+
+         file.close();
+         response = response + subject + "\n";
+         file_number++;
+      }
+   }
+
+   closedir(dir);
+   respond(current_socket, to_string(file_number) + "\n" + response);
+}
+
+//====================================================================================================================
+
+void read(int* current_socket, string username, string baseDirectory)
+{
+   int msnr = atoi(strtok(NULL, "\n"));
+   string filepath = findFile(current_socket, baseDirectory + "/" + username, msnr);
+
+   string line;
+   ifstream file(filepath);
+
+   //file must exist
+   if(!file.is_open())
+   {
+      perror("unable to open file");
+      respond(current_socket, "ERR\n");
+      return;
+   }
+   
+   getline(file, line);
+   string response = line;
+   while(getline(file, line))
+   {
+      response = response + "\n" + line;
+   }
+   file.close();
+
+   respond(current_socket, response);
+}
+
+//====================================================================================================================
+
+void del(int* current_socket, string username, string baseDirectory)
+{
+   int msnr = atoi(strtok(NULL, "\n"));
+   string filepath = findFile(current_socket, baseDirectory + "/" + username, msnr);
+
+   int status = remove(filepath.c_str());
+   if(status != 0)
+   {
+      perror("could not delete file");
+      respond(current_socket, "ERR\n");
+      return;
+   }
+
+   respond(current_socket, "OK\n");
+}
+
+//====================================================================================================================
 
 void signalHandler(int sig)
 {
@@ -456,34 +517,81 @@ void signalHandler(int sig)
    }
 }
 
-CommandType filterCommandType(const char *firstLine)
+//====================================================================================================================
+
+void respond(int *current_socket, string response)
 {
-    if (strcmp(firstLine, "LOGIN") == 0)
-    {
-        return LOGIN;
-    }
-    else if (strcmp(firstLine, "SEND") == 0)
-    {
-        return SEND;
-    }
-    else if (strcmp(firstLine, "LIST") == 0)
-    {
-        return LIST;
-    }
-    else if (strcmp(firstLine, "READ") == 0)
-    {
-        return READ;
-    }
-     else if (strcmp(firstLine, "DEL") == 0)
-    {
-        return DEL;
-    }
-    else if (strcmp(firstLine, "QUIT") == 0)
-    {
-        return QUIT;
-    }
-    else
-    {
-        return INVALID_COMMAND;
-    }
+   if (send(*current_socket, response.c_str(), response.size(), 0) == -1)
+   {
+      perror("send response failed");
+   }
+   else
+   {
+      printf("response successfully sent\n"); // ignore error
+   }
+}
+
+//====================================================================================================================
+
+string findFile(int *current_socket, string path, int position)
+{
+   string filename = "";
+
+   //filecount starts at 1
+   if(position == 0)
+   {
+      perror("bad message number");
+      respond(current_socket, "ERR\n");
+      return filename;
+   }
+
+   //directory must exist
+   DIR *dir = opendir(path.c_str());
+   if(dir == NULL)
+   {
+      perror("directory does not exist");
+      respond(current_socket, "ERR\n");
+      return filename;
+   }
+
+   struct dirent *entry;
+   struct stat st;
+   bool is_eof = false;
+
+   //directory can not be empty
+   if((entry = readdir(dir)) == NULL)
+   {
+      perror("directory empty");
+      respond(current_socket, "ERR\n");
+      return filename;
+   }
+
+   int i = 0;
+   while(i < position - 1)
+   {
+      if((entry = readdir(dir)) == NULL)
+      {
+         is_eof = true;
+         break;
+      }
+
+      string currentFile = path + "/" + entry->d_name;
+      stat(currentFile.c_str(), &st);
+      if(S_ISREG(st.st_mode))
+      {
+         i++;
+      }
+   }
+
+   //file not found
+   if(is_eof)
+   {
+      perror("file not found");
+      respond(current_socket, "ERR\n");
+      return filename;
+   }
+
+   closedir(dir);
+   filename = path + "/" + entry->d_name;
+   return filename;
 }

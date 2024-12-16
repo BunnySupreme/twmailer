@@ -6,3 +6,4 @@ limit message number input to max message number length (adjust after making ser
 limit message length to 1024
 
 # TODO SERVER
+security checks on requests

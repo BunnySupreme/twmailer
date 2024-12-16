@@ -1,30 +1,4 @@
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <ctype.h>
-
-#include <string>
-#include <iostream>
-#include <vector>
-
-///////////////////////////////////////////////////////////////////////////////
-
-#define BUF 1024
-#define USER_LENGTH 8
-#define PASSWORD_LENGTH 80
-#define SUBJECT_LENGTH 80
-#define PORT 6543
-
-using namespace std;
-
-///////////////////////////////////////////////////////////////////////////////
-
-void checkCommand(string &message);
+#include "twmailer-client.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -226,9 +200,8 @@ void checkCommand(string &message)
          message = "";
          return;
       }
-         message = message + "\n" + buffer;
+      message = message + "\n" + buffer;
       
-
       //Subject
       cout << "Subject: ";
       getline(cin, buffer, '\n');
@@ -259,30 +232,11 @@ void checkCommand(string &message)
    
    else if(message == "LIST")
    {
-      cout << "Username: ";
-      getline(cin, buffer, '\n');
-      if(buffer.size() > USER_LENGTH)
-      {
-         cout << "ERROR: Username must be shorter than 8 characters!" << endl;
-         message = "";
-         return;
-      }
-      message = message + "\n" + buffer;
       return;
    }
    
    else if(message == "READ" || message == "DEL")
    {
-      cout << "Username: ";
-      getline(cin, buffer, '\n');
-      if(buffer.size() > USER_LENGTH)
-      {
-         cout << "ERROR: Username must be shorter than 8 characters!" << endl;
-         message = "";
-         return;
-      }
-      message = message + "\n" + buffer;
-
       cout << "Message-Number: ";
       getline(cin, buffer, '\n');
       message = message + "\n" + buffer;
