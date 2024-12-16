@@ -388,6 +388,7 @@ void list(int *current_socket, string username, string baseDirectory)
    struct dirent *entry;
    struct stat st;
    int file_number = 0;
+   int message_index = 1;
    string response;
 
    while((entry = readdir(dir)) != NULL)
@@ -416,13 +417,14 @@ void list(int *current_socket, string username, string baseDirectory)
          string subject = line.substr(delpos + 1);
 
          file.close();
-         response = response + subject + "\n";
+         response = response + to_string(message_index) + ": " + subject + "\n";
+         message_index++;
          file_number++;
       }
    }
 
    closedir(dir);
-   respond(current_socket, to_string(file_number) + "\n" + response);
+   respond(current_socket, "Number of emails: " + to_string(file_number) + "\n" + response);
 }
 
 //====================================================================================================================
@@ -535,63 +537,58 @@ void respond(int *current_socket, string response)
 
 string findFile(int *current_socket, string path, int position)
 {
-   string filename = "";
+    string filename = "";
 
-   //filecount starts at 1
-   if(position == 0)
-   {
-      perror("bad message number");
-      respond(current_socket, "ERR\n");
-      return filename;
-   }
+    // filecount starts at 1
+    if (position == 0)
+    {
+        perror("bad message number");
+        respond(current_socket, "ERR\n");
+        return filename;
+    }
 
-   //directory must exist
-   DIR *dir = opendir(path.c_str());
-   if(dir == NULL)
-   {
-      perror("directory does not exist");
-      respond(current_socket, "ERR\n");
-      return filename;
-   }
+    // directory must exist
+    DIR *dir = opendir(path.c_str());
+    if (dir == NULL)
+    {
+        perror("directory does not exist");
+        respond(current_socket, "ERR\n");
+        return filename;
+    }
 
-   struct dirent *entry;
-   struct stat st;
-   bool is_eof = false;
+    struct dirent *entry;
+    struct stat st;
 
-   //directory can not be empty
-   if((entry = readdir(dir)) == NULL)
-   {
-      perror("directory empty");
-      respond(current_socket, "ERR\n");
-      return filename;
-   }
+    int i = 0;
+    while ((entry = readdir(dir)) != NULL)
+    {
+        // Skip "." and ".." entries
+        if (string(entry->d_name) == "." || string(entry->d_name) == "..")
+        {
+            continue;
+        }
 
-   int i = 0;
-   while(i < position - 1)
-   {
-      if((entry = readdir(dir)) == NULL)
-      {
-         is_eof = true;
-         break;
-      }
+        string currentFile = path + "/" + entry->d_name;
+        stat(currentFile.c_str(), &st);
 
-      string currentFile = path + "/" + entry->d_name;
-      stat(currentFile.c_str(), &st);
-      if(S_ISREG(st.st_mode))
-      {
-         i++;
-      }
-   }
+        if (S_ISREG(st.st_mode))
+        {
+            i++;
+            if (i == position)
+            {
+                filename = currentFile;
+                break;
+            }
+        }
+    }
 
-   //file not found
-   if(is_eof)
-   {
-      perror("file not found");
-      respond(current_socket, "ERR\n");
-      return filename;
-   }
+    // file not found
+    if (filename.empty())
+    {
+        perror("file not found");
+        respond(current_socket, "ERR\n");
+    }
 
-   closedir(dir);
-   filename = path + "/" + entry->d_name;
-   return filename;
+    closedir(dir);
+    return filename;
 }
