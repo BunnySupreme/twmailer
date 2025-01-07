@@ -1,10 +1,58 @@
 #include "twmailer-server.h"
+#include <queue>
+#include <thread>
+#include <vector>
+#include <condition_variable>
+#include <atomic>
 
 int abortRequested = 0;
 int create_socket = -1;
 int new_socket = -1;
 
-///////////////////////////////////////////////////////////////////////////////
+const int THREAD_POOL_SIZE = 4;
+
+// Global Thread Pool Variables
+std::vector<std::thread> threadPool;
+std::queue<int> taskQueue; //shared resource, we lock when accessing it
+                           //this taskQueue will store all clientSockets
+std::mutex queueMutex; //for locking aforementioned taskQueue
+std::condition_variable condition; //synchronization variable, until condition modified and notfied
+std::atomic<bool> serverRunning(true); // can be accessed by multiple threads without race condition
+
+void threadWorker()
+{
+    while (serverRunning)
+    {
+      std::unique_lock<std::mutex> lock(queueMutex);
+      //this lock is only for accessing the shared taskQueue
+
+      //queueMutex simulates a queue. All threads are waiting here, and one gets woken up by condition.notify_one
+      //
+
+      //while waiting, unlocks mutex
+      //When woken, Checks if there is a task or Server stopped running
+      //also reaquires mutex
+      condition.wait(lock, [] { return !taskQueue.empty() || !serverRunning; });
+
+      if (!serverRunning && taskQueue.empty())
+      {
+            return; // Exit thread
+      }
+
+      // Get the next client socket
+      int clientSocket = taskQueue.front();
+      taskQueue.pop();
+         lock.unlock(); // Unlock the shared taskQueue mutex while processing the client
+
+
+        // Handle client communication
+        clientCommunication(&clientSocket);
+
+        // Close client socket
+        shutdown(clientSocket, SHUT_RDWR);
+        close(clientSocket);
+    }
+}
 
 int main(void)
 {
@@ -92,7 +140,14 @@ int main(void)
       mkdir(directoryName, 0700);
    }
 
-   while (!abortRequested)
+   ////////////////////////////////////////////////////////////////////////////
+    // Initialize Thread Pool
+    for (int i = 0; i < THREAD_POOL_SIZE; ++i)
+    {
+        threadPool.emplace_back(threadWorker);
+    }
+
+   while (serverRunning)
    {
       /////////////////////////////////////////////////////////////////////////
       // ignore errors here... because only information message
@@ -104,22 +159,16 @@ int main(void)
       // blocking, might have an accept-error on ctrl+c
       addrlen = sizeof(struct sockaddr_in);
 
-      //around here make new threads/processes
 
-      if ((new_socket = accept(create_socket,
-                               (struct sockaddr *)&cliaddress,
-                               &addrlen)) == -1)
-      {
-         if (abortRequested)
-         {
-            perror("accept error after aborted");
-         }
-         else
-         {
-            perror("accept error");
-         }
-         break;
-      }
+      new_socket = accept(create_socket, (struct sockaddr *)&cliaddress, &addrlen);
+      if (new_socket  == -1)
+        {
+            if (serverRunning)
+            {
+                perror("accept error");
+            }
+            continue; // Skip and continue accepting connections
+        }
 
       /////////////////////////////////////////////////////////////////////////
       // START CLIENT
@@ -127,25 +176,31 @@ int main(void)
       printf("Client connected from %s:%d...\n",
              inet_ntoa(cliaddress.sin_addr),
              ntohs(cliaddress.sin_port));
-      clientCommunication(&new_socket);
-      new_socket = -1;
-   }
+      // Add task to the queue
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            taskQueue.push(new_socket);
+        }//lock_guard out of scope, unlocks
+        condition.notify_one(); // Notify one worker thread
+    }
 
-   // frees the descriptor
-   if (create_socket != -1)
-   {
-      if (shutdown(create_socket, SHUT_RDWR) == -1)
-      {
-         perror("shutdown create_socket");
-      }
-      if (close(create_socket) == -1)
-      {
-         perror("close create_socket");
-      }
-      create_socket = -1;
-   }
+    ////////////////////////////////////////////////////////////////////////////
+    // Cleanup
+    close(create_socket);
+    serverRunning = false; // Signal threads to shut down
+    condition.notify_all(); // Wake up all threads
 
-   return EXIT_SUCCESS;
+    // Join all threads
+    for (std::thread &t : threadPool)
+    {
+        if (t.joinable())
+        {
+            t.join();
+        }
+    }
+
+    printf("Server shut down.\n");
+    return EXIT_SUCCESS;
 }
 
 //====================================================================================================================
