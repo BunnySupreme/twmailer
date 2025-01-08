@@ -4,10 +4,18 @@
 #include <vector>
 #include <condition_variable>
 #include <atomic>
+#include <map>
+#include <string>
+#include <memory>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 int abortRequested = 0;
 int create_socket = -1;
 int new_socket = -1;
+std::map<std::string, std::unique_ptr<std::mutex>> individualEmailLocks;
+
 
 const int THREAD_POOL_SIZE = 4;
 
@@ -18,6 +26,8 @@ std::queue<int> taskQueue; //shared resource, we lock when accessing it
 std::mutex queueMutex; //for locking aforementioned taskQueue
 std::condition_variable condition; //synchronization variable, until condition modified and notfied
 std::atomic<bool> serverRunning(true); // can be accessed by multiple threads without race condition
+
+std::mutex directoryMutex; //this is for locking the whole Email directory access
 
 void threadWorker()
 {
@@ -253,7 +263,7 @@ void clientCommunication(void *data)
       // Handle the command
       if(firstLine == "LOGIN") 
       {
-         logged_in = login(current_socket, username);
+         logged_in = login(current_socket, username, std::string(baseDirectory));
       }
 
       else if(firstLine == "QUIT")
@@ -270,13 +280,14 @@ void clientCommunication(void *data)
          respond(current_socket, "ERR\n");
       }
 
+      else if(firstLine == "SEND")
+      {
+         send(current_socket, username, baseDirectory);
+      }
       else
       {
-         if(firstLine == "SEND")
-         {
-            send(current_socket, username, baseDirectory);
-         }
-         else if(firstLine == "LIST")
+         std::lock_guard<std::mutex> lock(*individualEmailLocks[username]);
+         if(firstLine == "LIST")
          {
             list(current_socket, username, baseDirectory);
          }
@@ -315,8 +326,38 @@ void clientCommunication(void *data)
 }
 
 //====================================================================================================================
+void createDirIfNotCreated(string username, string baseDirectory)
+{
+   string path = baseDirectory + "/" + username;
+   std::lock_guard<std::mutex> lock(directoryMutex);  // Lock the mutex
+   DIR *dir = opendir(path.c_str());
+   if(dir == NULL)
+   {
+      try
+      {
+         if (fs::create_directory(path))
+         {
+            std::cout << "Directory created: " << path << std::endl;
+            individualEmailLocks.try_emplace(username, std::make_unique<std::mutex>());
+         }
+         else
+         {
+            std::cout << "Directory already exists or failed to create." << std::endl;
+         }
+      }
+      catch (const fs::filesystem_error &e)
+      {
+         std::cerr << "Error: " << e.what() << std::endl;
+      }
+   }
+   else
+   {
+      closedir(dir); // Don't forget to close the directory if it exists
+   }
+}
 
-bool login(int *current_socket, string &username)
+
+bool login(int *current_socket, std::string &username, std::string baseDirectory)
 {
    bool logged_in = false;
    string password;
@@ -332,6 +373,8 @@ bool login(int *current_socket, string &username)
       logged_in = true;
       cout << "User is now logged in" << endl;
 
+      createDirIfNotCreated(username, baseDirectory);
+
       respond(current_socket, "OK\n");
    }
    else
@@ -344,7 +387,7 @@ bool login(int *current_socket, string &username)
 
 //====================================================================================================================
 
-void send(int *current_socket, string username, const char* baseDirectory)
+void send(int *current_socket, std::string username, std::string baseDirectory)
 {
    char *receiver;
    char *subject;
@@ -352,21 +395,12 @@ void send(int *current_socket, string username, const char* baseDirectory)
    string message;
    struct stat st;
    memset(&st, 0, sizeof(st));
-   char receiverDir[RECV_DIR];
+   
 
    receiver = strtok(NULL, "\n");
    //if directory for receiver does not exist, create directory
-   snprintf(receiverDir, sizeof(receiverDir), "%s/%s", baseDirectory, receiver);
-   printf("We will now check if directory exists\n");
-   if (stat(receiverDir, &st) == -1)
-   {
-      if (mkdir(receiverDir, 0700) == -1)
-      {
-         perror("mkdir failed");
-         respond(current_socket, "ERR\n");
-         return;
-      }
-   }
+   createDirIfNotCreated(receiver, baseDirectory);
+   string receiverDir = baseDirectory + "/" + receiver;
    printf("Directory exists\n");
    fflush(stdout);
    // Extract subject
@@ -404,13 +438,13 @@ void send(int *current_socket, string username, const char* baseDirectory)
       char uuid_str[37];
       uuid_generate(uuid);
       uuid_unparse(uuid, uuid_str);
+      std::string uuidString(uuid_str);
 
       // Generate file path
-      char file_path[256];
-      snprintf(file_path, sizeof(file_path), "%s/%s.txt", receiverDir, uuid_str);
-
+      string file_path = receiverDir + "/" + uuidString;
       //open file
-      FILE *file = fopen(file_path, "w");
+      std::lock_guard<std::mutex> lock(*individualEmailLocks[receiver]);
+      FILE *file = fopen(file_path.c_str(), "w");
       if (!file) {
          perror("fopen failed");
          respond(current_socket, "ERR\n");
@@ -436,10 +470,10 @@ void list(int *current_socket, string username, string baseDirectory)
    DIR *dir = opendir(path.c_str());
    if(dir == NULL)
    {
-      perror("directory does not exist");
       respond(current_socket, "ERR\n");
       return;
-   }
+   };
+   
 
    struct dirent *entry;
    struct stat st;
@@ -538,46 +572,33 @@ void del(int* current_socket, string username, string baseDirectory)
 
 void signalHandler(int sig)
 {
-   if (sig == SIGINT)
-   {
-      printf("abort Requested... "); // ignore error
-      abortRequested = 1;
-      /////////////////////////////////////////////////////////////////////////
-      // With shutdown() one can initiate normal TCP close sequence ignoring
-      // the reference count.
-      // https://beej.us/guide/bgnet/html/#close-and-shutdownget-outta-my-face
-      // https://linux.die.net/man/3/shutdown
-      if (new_socket != -1)
-      {
-         if (shutdown(new_socket, SHUT_RDWR) == -1)
-         {
-            perror("shutdown new_socket");
-         }
-         if (close(new_socket) == -1)
-         {
-            perror("close new_socket");
-         }
-         new_socket = -1;
-      }
+    if (sig == SIGINT)
+    {
+        printf("Abort Requested...\n");
+        serverRunning = false;  // Set serverRunning to false to notify threads
+        condition.notify_all();  // Wake up all waiting threads
 
-      if (create_socket != -1)
-      {
-         if (shutdown(create_socket, SHUT_RDWR) == -1)
-         {
-            perror("shutdown create_socket");
-         }
-         if (close(create_socket) == -1)
-         {
-            perror("close create_socket");
-         }
-         create_socket = -1;
-      }
-   }
-   else
-   {
-      exit(sig);
-   }
+        // Gracefully shut down all active sockets
+        if (new_socket != -1)
+        {
+            shutdown(new_socket, SHUT_RDWR);
+            close(new_socket);
+            new_socket = -1;
+        }
+
+        if (create_socket != -1)
+        {
+            shutdown(create_socket, SHUT_RDWR);
+            close(create_socket);
+            create_socket = -1;
+        }
+    }
+    else
+    {
+        exit(sig);  // For other signals, perform regular exit
+    }
 }
+
 
 //====================================================================================================================
 
@@ -656,3 +677,4 @@ string findFile(int *current_socket, string path, int position)
     closedir(dir);
     return filename;
 }
+

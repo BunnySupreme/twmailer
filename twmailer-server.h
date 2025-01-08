@@ -35,10 +35,11 @@ using namespace std;
 
 void clientCommunication(void *data);
 void signalHandler(int sig);
-bool login(int *current_socket, string &username);
-void send(int* current_socket, string username, const char *baseDirectory);
+bool login(int *current_socket, string &username, string baseDirectory);
+void send(int* current_socket, string username, string baseDirectory);
 void list(int* current_socket, string username, string baseDirectory);
 void read(int* current_socket, string username, string baseDirectory);
 void del(int* current_socket, string username, string baseDirectory);
 void respond(int *current_socket, string response);
 string findFile(int *current_socket, string path, int position);
+void createDirIfNotCreated(string username, string baseDirectory);
