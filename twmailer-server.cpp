@@ -9,6 +9,8 @@
 #include <memory>
 #include <filesystem>
 
+//#define ENABLE_MUTEX_TESTING
+
 namespace fs = std::filesystem;
 
 int abortRequested = 0;
@@ -58,9 +60,13 @@ void threadWorker()
         // Handle client communication
         clientCommunication(&clientSocket);
 
-        // Close client socket
-        shutdown(clientSocket, SHUT_RDWR);
-        close(clientSocket);
+         if(clientSocket != -1)
+         {
+            // Close client socket
+            shutdown(clientSocket, SHUT_RDWR);
+            close(clientSocket);
+         }
+        
     }
 }
 
@@ -215,6 +221,17 @@ int main(void)
 
 //====================================================================================================================
 
+void mutexDelayForTesting(string username)
+{
+   std::cout << "Thread ID: " << std::this_thread::get_id() << " is holding the mutex for " << username << std::endl;
+   std::this_thread::sleep_for(std::chrono::seconds(3)); // Delay for 3 seconds
+}
+
+void mutexUnlockedMessage(string username)
+{
+   std::cout << "Thread ID: " << std::this_thread::get_id() << " is releasing the mutex for " << username << std::endl;
+}
+
 void clientCommunication(void *data)
 {
    char buffer[BUF];
@@ -287,6 +304,10 @@ void clientCommunication(void *data)
       else
       {
          std::lock_guard<std::mutex> lock(*individualEmailLocks[username]);
+         #ifdef ENABLE_MUTEX_TESTING
+         mutexDelayForTesting(username);
+         #endif
+         
          if(firstLine == "LIST")
          {
             list(current_socket, username, baseDirectory);
@@ -303,7 +324,11 @@ void clientCommunication(void *data)
          {
             respond(current_socket, "ERR\n");
          }
+         #ifdef ENABLE_MUTEX_TESTING
+         mutexUnlockedMessage(username);
+         #endif
       }
+      
 
       memset(buffer, 0, BUF);
 
@@ -329,7 +354,12 @@ void clientCommunication(void *data)
 void createDirIfNotCreated(string username, string baseDirectory)
 {
    string path = baseDirectory + "/" + username;
+   
    std::lock_guard<std::mutex> lock(directoryMutex);  // Lock the mutex
+   #ifdef ENABLE_MUTEX_TESTING
+   mutexDelayForTesting("whole email directory");
+   #endif
+
    DIR *dir = opendir(path.c_str());
    if(dir == NULL)
    {
@@ -354,6 +384,9 @@ void createDirIfNotCreated(string username, string baseDirectory)
    {
       closedir(dir); // Don't forget to close the directory if it exists
    }
+   #ifdef ENABLE_MUTEX_TESTING
+   mutexUnlockedMessage("whole email directory");
+   #endif
 }
 
 
@@ -444,6 +477,9 @@ void send(int *current_socket, std::string username, std::string baseDirectory)
       string file_path = receiverDir + "/" + uuidString;
       //open file
       std::lock_guard<std::mutex> lock(*individualEmailLocks[receiver]);
+      #ifdef ENABLE_MUTEX_TESTING
+      mutexDelayForTesting(receiver);
+      #endif
       FILE *file = fopen(file_path.c_str(), "w");
       if (!file) {
          perror("fopen failed");
@@ -457,6 +493,9 @@ void send(int *current_socket, std::string username, std::string baseDirectory)
       fprintf(file, "Message:%s\n", message.c_str());
       fclose(file);
    }
+   #ifdef ENABLE_MUTEX_TESTING
+   mutexUnlockedMessage(receiver);
+   #endif
    // Send success response
    respond(current_socket, "OK\n");
 }
@@ -581,15 +620,27 @@ void signalHandler(int sig)
         // Gracefully shut down all active sockets
         if (new_socket != -1)
         {
-            shutdown(new_socket, SHUT_RDWR);
-            close(new_socket);
+            if (shutdown(new_socket, SHUT_RDWR) == -1)
+            {
+                perror("shutdown new_socket failed");
+            }
+            if (close(new_socket) == -1)
+            {
+                perror("close new_socket failed");
+            }
             new_socket = -1;
         }
 
         if (create_socket != -1)
         {
-            shutdown(create_socket, SHUT_RDWR);
-            close(create_socket);
+            if (shutdown(create_socket, SHUT_RDWR) == -1)
+            {
+                perror("shutdown create_socket failed");
+            }
+            if (close(create_socket) == -1)
+            {
+                perror("close create_socket failed");
+            }
             create_socket = -1;
         }
     }
@@ -598,6 +649,7 @@ void signalHandler(int sig)
         exit(sig);  // For other signals, perform regular exit
     }
 }
+
 
 
 //====================================================================================================================
