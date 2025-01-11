@@ -271,13 +271,20 @@ void clientCommunication(void *data)
          break;
       }
 
-      //Get first line
-      string firstLine = strtok(buffer, "\n");
+         // Null-terminate the buffer to make it a valid C-string
+      buffer[size] = '\0';
+
+      // Convert buffer to a std::string
+      std::string input(buffer);
+
+      std::istringstream stream(input);
+      std::string firstLine;
+      std::getline(stream, firstLine); // Extracts the first line from the input
 
       // Handle the command
       if(firstLine == "LOGIN") 
       {
-         logged_in = login(current_socket, username, std::string(baseDirectory));
+         logged_in = login(current_socket, username, std::string(baseDirectory), stream);
       }
 
       else if(firstLine == "QUIT")
@@ -296,10 +303,12 @@ void clientCommunication(void *data)
 
       else if(firstLine == "SEND")
       {
-         send(current_socket, username, baseDirectory);
+         emailSend(current_socket, username, baseDirectory, stream);
       }
       else
       {
+          //create a mutex for this folder, if it does not exist
+         individualEmailLocks.try_emplace(username, std::make_unique<std::mutex>());
          std::lock_guard<std::mutex> lock(*individualEmailLocks[username]);
          #ifdef ENABLE_MUTEX_TESTING
          mutexDelayForTesting(username);
@@ -311,11 +320,11 @@ void clientCommunication(void *data)
          }
          else if(firstLine == "READ")
          {
-            read(current_socket, username, baseDirectory);
+            read(current_socket, username, baseDirectory, stream);
          }
          else if(firstLine == "DEL")
          {
-            del(current_socket, username, baseDirectory);
+            del(current_socket, username, baseDirectory, stream);
          }
          else
          {
@@ -328,7 +337,6 @@ void clientCommunication(void *data)
       
 
       memset(buffer, 0, BUF);
-
    }
    while (!abortRequested);
 
@@ -366,7 +374,7 @@ void createDirIfNotCreated(string username, string baseDirectory)
          if (fs::create_directory(path))
          {
             std::cout << "Directory created: " << path << std::endl;
-            individualEmailLocks.try_emplace(username, std::make_unique<std::mutex>());
+            
          }
          else
          {
@@ -382,6 +390,8 @@ void createDirIfNotCreated(string username, string baseDirectory)
    {
       closedir(dir); // Don't forget to close the directory if it exists
    }
+   //create a mutex for this folder, if it does not exist
+   individualEmailLocks.try_emplace(username, std::make_unique<std::mutex>());
    #ifdef ENABLE_MUTEX_TESTING
    mutexUnlockedMessage("whole email directory");
    #endif
@@ -389,14 +399,16 @@ void createDirIfNotCreated(string username, string baseDirectory)
 
 //====================================================================================================================
 
-bool login(int *current_socket, std::string &username, std::string baseDirectory)
+bool login(int *current_socket, std::string &username, std::string baseDirectory, std::istringstream &stream)
 {
    bool logged_in = false;
    string password;
 
-   // Ensure we don't read more than the allocated space
-   username = strtok(NULL, "\n");
-   password = strtok(NULL, "\n");
+    if (!std::getline(stream, username) || !std::getline(stream, password))
+    {
+        respond(current_socket, "ERR\n"); // Missing username or password
+        return logged_in;
+    }
 
    if(login_attempts[username] > 2)
    {
@@ -455,42 +467,55 @@ bool login(int *current_socket, std::string &username, std::string baseDirectory
 
 //====================================================================================================================
 
-void send(int *current_socket, std::string username, std::string baseDirectory)
+void emailSend(int *current_socket, std::string username, std::string baseDirectory, std::istringstream &stream)
 {
-   char *receiver;
-   char *subject;
-   char *line;
-   string message;
+   string receiver;
+   string subject = "";
+   string line;
+   string message = "";
    struct stat st;
    memset(&st, 0, sizeof(st));
    
 
-   receiver = strtok(NULL, "\n");
+   if (!std::getline(stream, receiver))
+   {
+        respond(current_socket, "ERR\n"); 
+        return;
+    }
    //if directory for receiver does not exist, create directory
    createDirIfNotCreated(receiver, baseDirectory);
    string receiverDir = baseDirectory + "/" + receiver;
    printf("Directory exists\n");
    fflush(stdout);
    // Extract subject
-   subject = strtok(NULL, "\n");
+   if (!std::getline(stream, subject))
+   {
+        respond(current_socket, "ERR\n"); 
+        return;
+    }
+   
    printf("subject parsed\n");
    fflush(stdout);
 
    // Get the message until a line containing only '.' is received
    message = "";
-   do
+   while(true)
    {
-      line = strtok(NULL, "\n");
-      if (strcmp(line, ".") == 0)
+       if (!std::getline(stream, line))
+    {
+        respond(current_socket, "ERR\n"); 
+        break;
+    }
+   
+      if (line == ".")
       {
          printf("End of message received.\n");
          break;
       }
       message = message + "\n" + line;     
    }
-   while (line!= NULL);
 
-   if (!subject || message.empty())
+   if (subject.empty() || message.empty())
    {
       respond(current_socket, "ERR\n");
       return;
@@ -510,24 +535,19 @@ void send(int *current_socket, std::string username, std::string baseDirectory)
 
       // Generate file path
       string file_path = receiverDir + "/" + uuidString;
-      //open file
+      //lock folder
+       //create a mutex for this folder, if it does not exist
+      individualEmailLocks.try_emplace(username, std::make_unique<std::mutex>());
       std::lock_guard<std::mutex> lock(*individualEmailLocks[receiver]);
       #ifdef ENABLE_MUTEX_TESTING
       mutexDelayForTesting(receiver);
       #endif
-      FILE *file = fopen(file_path.c_str(), "w");
-      if (!file) {
-         perror("fopen failed");
-         respond(current_socket, "ERR\n");
-         return;
-      }
-
       //write and close file
-      fprintf(file, "Sender: %s\n", username.c_str());
-      fprintf(file, "Subject: %s\n", subject);
-      fprintf(file, "Message:%s\n", message.c_str());
-      fclose(file);
+      writeToFile(file_path, username, subject, message);
    }
+
+
+   
    #ifdef ENABLE_MUTEX_TESTING
    mutexUnlockedMessage(receiver);
    #endif
@@ -540,9 +560,16 @@ void send(int *current_socket, std::string username, std::string baseDirectory)
 void list(int *current_socket, string username, string baseDirectory)
 {
    string path = baseDirectory + "/" + username;
+   std::cout << path << std::endl;
+   if (path.empty())
+    {
+        respond(current_socket, "ERR\n");
+        std::cerr << "Error: Path is empty!" << std::endl;
+        return;
+    }
 
    DIR *dir = opendir(path.c_str());
-   if(dir == NULL)
+   if(dir == nullptr)
    {
       respond(current_socket, "ERR\n");
       return;
@@ -597,9 +624,17 @@ void list(int *current_socket, string username, string baseDirectory)
 
 //====================================================================================================================
 
-void read(int* current_socket, string username, string baseDirectory)
+void read(int* current_socket, string username, string baseDirectory, std::istringstream &stream)
 {
-   int msnr = atoi(strtok(NULL, "\n"));
+  
+    string msnrString;
+   if (!std::getline(stream, msnrString))
+    {
+        respond(current_socket, "ERR\n"); 
+        return;
+    }
+   int msnr = stoi(msnrString);
+
    string filepath = findFile(current_socket, baseDirectory + "/" + username, msnr);
 
    string line;
@@ -626,9 +661,16 @@ void read(int* current_socket, string username, string baseDirectory)
 
 //====================================================================================================================
 
-void del(int* current_socket, string username, string baseDirectory)
+void del(int* current_socket, string username, string baseDirectory, std::istringstream &stream)
 {
-   int msnr = atoi(strtok(NULL, "\n"));
+
+     string msnrString;
+   if (!std::getline(stream, msnrString))
+    {
+        respond(current_socket, "ERR\n"); 
+        return;
+    }
+   int msnr = stoi(msnrString);
    string filepath = findFile(current_socket, baseDirectory + "/" + username, msnr);
 
    int status = remove(filepath.c_str());
@@ -758,7 +800,7 @@ string findFile(int *current_socket, string path, int position)
     if (filename.empty())
     {
         perror("file not found");
-        respond(current_socket, "ERR\n");
+        //the calling function will send ERR to client
     }
 
     closedir(dir);
@@ -790,6 +832,7 @@ bool checkBlacklist(std::string username)
 
 bool checkLdap(std::string username, std::string password)
 {
+   //std::cout << username << std::endl << password << std::endl;
    std::string filter_username = "(uid=" + username + "*)";
    const char *ldapUri = "ldap://ldap.technikum-wien.at:389";
    const int ldapVersion = LDAP_VERSION3;
@@ -911,4 +954,21 @@ bool checkLdap(std::string username, std::string password)
 
    ldap_unbind_ext_s(ldapHandle, NULL, NULL);
    return true;
+}
+
+
+void writeToFile(const std::string& filename, const std::string& username, const std::string& subject, const std::string& message)
+{
+    std::ofstream file(filename);
+    if (!file)
+    {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        return;
+    }
+
+    file << "Sender: " << username << "\n";
+    file << "Subject: " << subject << "\n";
+    file << "Message: " << message << "\n";
+
+    // The file is automatically closed when the ofstream object goes out of scope
 }
