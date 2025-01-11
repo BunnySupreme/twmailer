@@ -21,7 +21,7 @@ CC=g++
 #############################################################################################
 
 # Compiler Flags: These are only for compiling and do not include -luuid for the linker.
-CFLAGS=-g -Wall -Wextra -Werror -O -std=c++17 -pthread
+CFLAGS=-g -Wall -Wextra -Werror -O -std=c++17 -pthread -lldap -llber
 
 # Linker flags: Use this only when linking the final binary.
 LDFLAGS=-luuid

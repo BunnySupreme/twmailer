@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <termios.h>
+
 
 #include <string>
 #include <iostream>
@@ -25,3 +27,5 @@ using namespace std;
 ///////////////////////////////////////////////////////////////////////////////
 
 void checkCommand(string &message);
+int getch();
+const char *getpass();

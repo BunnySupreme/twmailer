@@ -8,6 +8,7 @@
 #include <string>
 #include <memory>
 #include <filesystem>
+#include <ldap.h>
 
 //#define ENABLE_MUTEX_TESTING
 
@@ -18,16 +19,17 @@ int create_socket = -1;
 int new_socket = -1;
 std::map<std::string, std::unique_ptr<std::mutex>> individualEmailLocks;
 
-
 const int THREAD_POOL_SIZE = 4;
 
 // Global Thread Pool Variables
 std::vector<std::thread> threadPool;
 std::queue<int> taskQueue; //shared resource, we lock when accessing it
                            //this taskQueue will store all clientSockets
+std::mutex blacklistMutex;
 std::mutex queueMutex; //for locking aforementioned taskQueue
 std::condition_variable condition; //synchronization variable, until condition modified and notfied
 std::atomic<bool> serverRunning(true); // can be accessed by multiple threads without race condition
+std::map<std::string, int> login_attempts;
 
 std::mutex directoryMutex; //this is for locking the whole Email directory access
 
@@ -156,6 +158,13 @@ int main(void)
       mkdir(directoryName, 0700);
    }
 
+   std::ifstream blacklist(BLACKLIST);
+   if(!blacklist)
+   {
+      std::ofstream outputFile(BLACKLIST);
+   }
+   blacklist.close();
+
    ////////////////////////////////////////////////////////////////////////////
     // Initialize Thread Pool
     for (int i = 0; i < THREAD_POOL_SIZE; ++i)
@@ -272,8 +281,6 @@ void clientCommunication(void *data)
          break;
       }
 
-      cout << endl << "Message recieved: " << endl << buffer << endl << endl;
-
       //Get first line
       string firstLine = strtok(buffer, "\n");
 
@@ -351,6 +358,7 @@ void clientCommunication(void *data)
 }
 
 //====================================================================================================================
+
 void createDirIfNotCreated(string username, string baseDirectory)
 {
    string path = baseDirectory + "/" + username;
@@ -389,6 +397,7 @@ void createDirIfNotCreated(string username, string baseDirectory)
    #endif
 }
 
+//====================================================================================================================
 
 bool login(int *current_socket, std::string &username, std::string baseDirectory)
 {
@@ -398,10 +407,42 @@ bool login(int *current_socket, std::string &username, std::string baseDirectory
    // Ensure we don't read more than the allocated space
    username = strtok(NULL, "\n");
    password = strtok(NULL, "\n");
+
+   if(login_attempts[username] > 2)
+   {
+      std::unique_lock<std::mutex> lock(blacklistMutex);
+      std::ofstream blacklist(BLACKLIST, std::ios::app);
+      blacklist << username + "\n";
+      blacklist.close();
+      lock.unlock();
+   }
+
    if (username != "" && password != "")
    {
+      if(checkBlacklist(username))
+      {
+         respond(current_socket, "ERR\n");
+         return logged_in;
+      }
+
+      if(!checkLdap(username, password))
+      {
+         if(login_attempts.find(username) != login_attempts.end())
+         {
+            login_attempts[username]++;
+         }
+         else
+         {
+            login_attempts[username] = 1;
+         }
+         respond(current_socket, "ERR\n");
+         return logged_in;
+      }
+
+      login_attempts.erase(username);
+
       cout << "Username set to: " << username << endl;
-      cout << "Password set to: " << password << endl;
+      cout << "Password set" << endl;
 
       logged_in = true;
       cout << "User is now logged in" << endl;
@@ -730,3 +771,107 @@ string findFile(int *current_socket, string path, int position)
     return filename;
 }
 
+bool checkBlacklist(std::string username)
+{
+   std::string line;
+   std::unique_lock<std::mutex> lock(blacklistMutex);
+   std::ifstream blacklist(BLACKLIST);
+   while(std::getline(blacklist, line))
+   {
+      if(line == username)
+      {
+         blacklist.close();
+         lock.unlock();
+         return true;
+      }
+   }
+   blacklist.close();
+   lock.unlock();
+   return false;
+}
+
+bool checkLdap(std::string username, std::string password)
+{
+   const char *ldapUri = "ldap://ldap.technikum-wien.at:389";
+   const int ldapVersion = LDAP_VERSION3;
+
+   const char *ldapSearchBaseDomainComponent = "dc=technikum-wien,dc=at";
+   const char *ldapSearchFilter = "(uid=if23b08*)";
+   ber_int_t ldapSearchScope = LDAP_SCOPE_SUBTREE;
+   const char *ldapSearchResultAttributes[] = {"uid", "cn", NULL};
+
+   int rc = 0;
+
+   LDAP *ldapHandle;
+   rc = ldap_initialize(&ldapHandle, ldapUri);
+   if (rc != LDAP_SUCCESS)
+   {
+      fprintf(stderr, "ldap_init failed\n");
+      return EXIT_FAILURE;
+   }
+   printf("connected to LDAP server %s\n", ldapUri);
+
+   rc = ldap_set_option(
+       ldapHandle,
+       LDAP_OPT_PROTOCOL_VERSION, // OPTION
+       &ldapVersion);             // IN-Value
+   if (rc != LDAP_OPT_SUCCESS)
+   {
+      fprintf(stderr, "ldap_set_option(PROTOCOL_VERSION): %s\n", ldap_err2string(rc));
+      ldap_unbind_ext_s(ldapHandle, NULL, NULL);
+      return EXIT_FAILURE;
+   }
+
+   rc = ldap_start_tls_s(
+       ldapHandle,
+       NULL,
+       NULL);
+   if (rc != LDAP_SUCCESS)
+   {
+      fprintf(stderr, "ldap_start_tls_s(): %s\n", ldap_err2string(rc));
+      ldap_unbind_ext_s(ldapHandle, NULL, NULL);
+      return EXIT_FAILURE;
+   }
+
+   BerValue bindCredentials;
+   bindCredentials.bv_val = (char *)password.c_str();
+   bindCredentials.bv_len = strlen(password.c_str());
+   BerValue *servercredp; // server's credentials
+   rc = ldap_sasl_bind_s(
+       ldapHandle,
+       username.c_str(),
+       LDAP_SASL_SIMPLE,
+       &bindCredentials,
+       NULL,
+       NULL,
+       &servercredp);
+   if (rc != LDAP_SUCCESS)
+   {
+      fprintf(stderr, "LDAP bind error: %s\n", ldap_err2string(rc));
+      ldap_unbind_ext_s(ldapHandle, NULL, NULL);
+      return EXIT_FAILURE;
+   }
+
+   LDAPMessage *searchResult;
+   rc = ldap_search_ext_s(
+       ldapHandle,
+       ldapSearchBaseDomainComponent,
+       ldapSearchScope,
+       ldapSearchFilter,
+       (char **)ldapSearchResultAttributes,
+       0,
+       NULL,
+       NULL,
+       NULL,
+       500,
+       &searchResult);
+   if (rc != LDAP_SUCCESS)
+   {
+      fprintf(stderr, "LDAP search error: %s\n", ldap_err2string(rc));
+      ldap_unbind_ext_s(ldapHandle, NULL, NULL);
+      return EXIT_FAILURE;
+   }
+
+   printf("Total results: %d\n", ldap_count_entries(ldapHandle, searchResult));
+   return true;
+}

@@ -28,6 +28,7 @@
 #define SUBJECT_LENGTH 80
 #define SUBJECT_BUFFER_LENGTH 89
 #define RECV_DIR 16
+#define BLACKLIST "blacklist.txt"
 
 using namespace std;
 
@@ -43,3 +44,5 @@ void del(int* current_socket, string username, string baseDirectory);
 void respond(int *current_socket, string response);
 string findFile(int *current_socket, string path, int position);
 void createDirIfNotCreated(string username, string baseDirectory);
+bool checkBlacklist(std::string username);
+bool checkLdap(std::string username, std::string password);
