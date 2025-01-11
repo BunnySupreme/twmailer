@@ -12,12 +12,20 @@
 #include <uuid/uuid.h>
 #include <cstring>  // For memset
 #include <dirent.h>
+#include <ldap.h>
 
+#include <queue>
+#include <thread>
+#include <condition_variable>
+#include <atomic>
 #include <string>
 #include <vector>
 #include <iostream>
 #include <sstream>
 #include <fstream>
+#include <filesystem>
+#include <memory>
+#include <map>
 
 ///////////////////////////////////////////////////////////////////////////////
 

@@ -1,14 +1,4 @@
 #include "twmailer-server.h"
-#include <queue>
-#include <thread>
-#include <vector>
-#include <condition_variable>
-#include <atomic>
-#include <map>
-#include <string>
-#include <memory>
-#include <filesystem>
-#include <ldap.h>
 
 //#define ENABLE_MUTEX_TESTING
 
@@ -413,6 +403,8 @@ bool login(int *current_socket, std::string &username, std::string baseDirectory
       std::unique_lock<std::mutex> lock(blacklistMutex);
       std::ofstream blacklist(BLACKLIST, std::ios::app);
       blacklist << username + "\n";
+      cout << "User " << username << " added to blacklist" << endl;
+      login_attempts.erase(username);
       blacklist.close();
       lock.unlock();
    }
@@ -422,6 +414,7 @@ bool login(int *current_socket, std::string &username, std::string baseDirectory
       if(checkBlacklist(username))
       {
          respond(current_socket, "ERR\n");
+         cout << "can not login: Username is blacklisted" << endl;
          return logged_in;
       }
 
@@ -436,6 +429,7 @@ bool login(int *current_socket, std::string &username, std::string baseDirectory
             login_attempts[username] = 1;
          }
          respond(current_socket, "ERR\n");
+         cout << "Wrong user credentials, attempts: " << login_attempts[username] << endl;
          return logged_in;
       }
 
@@ -771,6 +765,8 @@ string findFile(int *current_socket, string path, int position)
     return filename;
 }
 
+//====================================================================================================================
+
 bool checkBlacklist(std::string username)
 {
    std::string line;
@@ -790,24 +786,28 @@ bool checkBlacklist(std::string username)
    return false;
 }
 
+//====================================================================================================================
+
 bool checkLdap(std::string username, std::string password)
 {
+   std::string filter_username = "(uid=" + username + "*)";
    const char *ldapUri = "ldap://ldap.technikum-wien.at:389";
    const int ldapVersion = LDAP_VERSION3;
 
    const char *ldapSearchBaseDomainComponent = "dc=technikum-wien,dc=at";
-   const char *ldapSearchFilter = "(uid=if23b08*)";
+   const char *ldapSearchFilter = filter_username.c_str();
    ber_int_t ldapSearchScope = LDAP_SCOPE_SUBTREE;
    const char *ldapSearchResultAttributes[] = {"uid", "cn", NULL};
 
    int rc = 0;
+   username = "uid=" + username + ",ou=people,dc=technikum-wien,dc=at";
 
    LDAP *ldapHandle;
    rc = ldap_initialize(&ldapHandle, ldapUri);
    if (rc != LDAP_SUCCESS)
    {
       fprintf(stderr, "ldap_init failed\n");
-      return EXIT_FAILURE;
+      return false;
    }
    printf("connected to LDAP server %s\n", ldapUri);
 
@@ -819,7 +819,7 @@ bool checkLdap(std::string username, std::string password)
    {
       fprintf(stderr, "ldap_set_option(PROTOCOL_VERSION): %s\n", ldap_err2string(rc));
       ldap_unbind_ext_s(ldapHandle, NULL, NULL);
-      return EXIT_FAILURE;
+      return false;
    }
 
    rc = ldap_start_tls_s(
@@ -830,13 +830,13 @@ bool checkLdap(std::string username, std::string password)
    {
       fprintf(stderr, "ldap_start_tls_s(): %s\n", ldap_err2string(rc));
       ldap_unbind_ext_s(ldapHandle, NULL, NULL);
-      return EXIT_FAILURE;
+      return false;
    }
 
    BerValue bindCredentials;
    bindCredentials.bv_val = (char *)password.c_str();
    bindCredentials.bv_len = strlen(password.c_str());
-   BerValue *servercredp; // server's credentials
+   BerValue *servercredp;
    rc = ldap_sasl_bind_s(
        ldapHandle,
        username.c_str(),
@@ -849,7 +849,7 @@ bool checkLdap(std::string username, std::string password)
    {
       fprintf(stderr, "LDAP bind error: %s\n", ldap_err2string(rc));
       ldap_unbind_ext_s(ldapHandle, NULL, NULL);
-      return EXIT_FAILURE;
+      return false;
    }
 
    LDAPMessage *searchResult;
@@ -869,9 +869,46 @@ bool checkLdap(std::string username, std::string password)
    {
       fprintf(stderr, "LDAP search error: %s\n", ldap_err2string(rc));
       ldap_unbind_ext_s(ldapHandle, NULL, NULL);
-      return EXIT_FAILURE;
+      return false;
    }
 
    printf("Total results: %d\n", ldap_count_entries(ldapHandle, searchResult));
+
+   LDAPMessage *searchResultEntry;
+   for (searchResultEntry = ldap_first_entry(ldapHandle, searchResult);
+        searchResultEntry != NULL;
+        searchResultEntry = ldap_next_entry(ldapHandle, searchResultEntry))
+   {
+      printf("DN: %s\n", ldap_get_dn(ldapHandle, searchResultEntry));
+
+      BerElement *ber;
+      char *searchResultEntryAttribute;
+      for (searchResultEntryAttribute = ldap_first_attribute(ldapHandle, searchResultEntry, &ber);
+           searchResultEntryAttribute != NULL;
+           searchResultEntryAttribute = ldap_next_attribute(ldapHandle, searchResultEntry, ber))
+      {
+         BerValue **vals;
+         if ((vals = ldap_get_values_len(ldapHandle, searchResultEntry, searchResultEntryAttribute)) != NULL)
+         {
+            for (int i = 0; i < ldap_count_values_len(vals); i++)
+            {
+               printf("\t%s: %s\n", searchResultEntryAttribute, vals[i]->bv_val);
+            }
+            ldap_value_free_len(vals);
+         }
+
+         ldap_memfree(searchResultEntryAttribute);
+      }
+      if (ber != NULL)
+      {
+         ber_free(ber, 0);
+      }
+
+      printf("\n");
+   }
+
+   ldap_msgfree(searchResult);
+
+   ldap_unbind_ext_s(ldapHandle, NULL, NULL);
    return true;
 }
