@@ -28,4 +28,4 @@ using namespace std;
 
 void checkCommand(string &message);
 int getch();
-const char *getpass();
+std::string getpass();

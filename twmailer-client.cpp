@@ -268,7 +268,7 @@ int getch()
     return ch;
 }
 
-const char *getpass()
+std::string getpass()
 {
     int show_asterisk = 0;
 
@@ -288,7 +288,7 @@ const char *getpass()
             {
                 if (show_asterisk)
                 {
-                    printf("\b \b"); // backslash: \b
+                    printf("\b \b"); // Backspace
                 }
                 password.resize(password.length() - 1);
             }
@@ -303,5 +303,5 @@ const char *getpass()
         }
     }
     printf("\n");
-    return password.c_str();
+    return password;
 }
