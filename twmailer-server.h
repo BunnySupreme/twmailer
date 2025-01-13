@@ -55,3 +55,4 @@ void createDirIfNotCreated(string username, string baseDirectory);
 bool checkBlacklist(std::string username);
 bool checkLdap(std::string username, std::string password);
 void writeToFile(const std::string& filename, const std::string& username, const std::string& subject, const std::string& message);
+std::string getClientIPAddress(int* current_socket);

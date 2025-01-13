@@ -410,42 +410,49 @@ bool login(int *current_socket, std::string &username, std::string baseDirectory
         return logged_in;
     }
 
-   if(login_attempts[username] > 2)
+    std::string client_ip = getClientIPAddress(current_socket);
+    if (client_ip.empty())
+    {
+        respond(current_socket, "ERR\n");
+        return false;
+    }
+
+   if(login_attempts[client_ip] > 2)
    {
-      std::unique_lock<std::mutex> lock(blacklistMutex);
-      std::ofstream blacklist(BLACKLIST, std::ios::app);
-      blacklist << username + "\n";
-      cout << "User " << username << " added to blacklist" << endl;
-      login_attempts.erase(username);
-      blacklist.close();
-      lock.unlock();
-   }
+        std::unique_lock<std::mutex> lock(blacklistMutex);
+        std::ofstream blacklist(BLACKLIST, std::ios::app);
+        blacklist << client_ip + "\n";
+        std::cout << "IP " << client_ip << " added to blacklist" << std::endl;
+        login_attempts.erase(client_ip);
+        blacklist.close();
+        lock.unlock();
+    }
 
    if (username != "" && password != "")
    {
-      if(checkBlacklist(username))
+      if(checkBlacklist(client_ip))
       {
          respond(current_socket, "ERR\n");
-         cout << "can not login: Username is blacklisted" << endl;
+         cout << "can not login: IP is blacklisted" << endl;
          return logged_in;
       }
 
       if(!checkLdap(username, password))
       {
-         if(login_attempts.find(username) != login_attempts.end())
+         if(login_attempts.find(client_ip) != login_attempts.end())
          {
-            login_attempts[username]++;
+            login_attempts[client_ip]++;
          }
          else
          {
-            login_attempts[username] = 1;
+            login_attempts[client_ip] = 1;
          }
          respond(current_socket, "ERR\n");
-         cout << "Wrong user credentials, attempts: " << login_attempts[username] << endl;
+         cout << "Wrong user credentials, attempts: " << login_attempts[client_ip] << endl;
          return logged_in;
       }
 
-      login_attempts.erase(username);
+      login_attempts.erase(client_ip);
 
       cout << "Username set to: " << username << endl;
       cout << "Password set" << endl;
@@ -809,14 +816,14 @@ string findFile(int *current_socket, string path, int position)
 
 //====================================================================================================================
 
-bool checkBlacklist(std::string username)
+bool checkBlacklist(std::string client_ip)
 {
    std::string line;
    std::unique_lock<std::mutex> lock(blacklistMutex);
    std::ifstream blacklist(BLACKLIST);
    while(std::getline(blacklist, line))
    {
-      if(line == username)
+      if(line == client_ip)
       {
          blacklist.close();
          lock.unlock();
@@ -971,4 +978,26 @@ void writeToFile(const std::string& filename, const std::string& username, const
     file << "Message: " << message << "\n";
 
     // The file is automatically closed when the ofstream object goes out of scope
+}
+
+std::string getClientIPAddress(int* current_socket)
+{
+    if (current_socket == nullptr || *current_socket < 0)
+    {
+        std::cerr << "Invalid socket" << std::endl;
+        return "";
+    }
+
+    sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+
+    if (getpeername(*current_socket, (sockaddr *)&client_addr, &addr_len) == -1)
+    {
+        perror("getpeername failed");
+        return "";
+    }
+
+    char ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(client_addr.sin_addr), ip_str, INET_ADDRSTRLEN);
+    return std::string(ip_str);
 }
