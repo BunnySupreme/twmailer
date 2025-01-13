@@ -10,6 +10,9 @@ int new_socket = -1;
 std::map<std::string, std::unique_ptr<std::mutex>> individualEmailLocks;
 
 const int THREAD_POOL_SIZE = 4;
+std::atomic<int> availableThreads(4);
+std::atomic<int> activeThreads(0);
+const int MAX_THREAD_POOL_SIZE = 32; // Maximum number of threads allowed
 
 // Global Thread Pool Variables
 std::vector<std::thread> threadPool;
@@ -17,6 +20,7 @@ std::queue<int> taskQueue; //shared resource, we lock when accessing it
                            //this taskQueue will store all clientSockets
 std::mutex blacklistMutex;
 std::mutex queueMutex; //for locking aforementioned taskQueue
+std::mutex threadQueue; //for locking threadPool when creating, deleting threads
 std::condition_variable condition; //synchronization variable, until condition modified and notfied
 std::atomic<bool> serverRunning(true); // can be accessed by multiple threads without race condition
 std::map<std::string, int> login_attempts;
@@ -30,16 +34,23 @@ void threadWorker()
       std::unique_lock<std::mutex> lock(queueMutex);
       //this lock is only for accessing the shared taskQueue
 
-      //queueMutex simulates a queue. All threads are waiting here, and one gets woken up by condition.notify_one
+      //tasks are in the taskQueue. All threads are waiting here, and one gets woken up by condition.notify_one
       //
 
       //while waiting, unlocks mutex
       //When woken, Checks if there is a task or Server stopped running
       //also reaquires mutex
-      condition.wait(lock, [] { return !taskQueue.empty() || !serverRunning; });
+      condition.wait(lock, [] {
+    return !taskQueue.empty() || !serverRunning || availableThreads > THREAD_POOL_SIZE;
+});
+    //3 possibilitels: either something in the taskQueue, or server stopped running (cleanup thread) or 
+    //there are a lot of threads, maybe one can be removed
 
-      if (!serverRunning && taskQueue.empty())
+      //if taskQueue empty, either because no more tasks or server no longer running
+      if (taskQueue.empty())
       {
+         std::cout << "reduced one idle thread" << std::endl;
+            --availableThreads; // Reduce the available thread count
             return; // Exit thread
       }
 
@@ -47,6 +58,8 @@ void threadWorker()
       int clientSocket = taskQueue.front();
       taskQueue.pop();
          lock.unlock(); // Unlock the shared taskQueue mutex while processing the client
+         --availableThreads;
+         ++activeThreads;
 
 
         // Handle client communication
@@ -160,62 +173,86 @@ int main(void)
     for (int i = 0; i < THREAD_POOL_SIZE; ++i)
     {
         threadPool.emplace_back(threadWorker);
+        availableThreads = THREAD_POOL_SIZE;
     }
+    std::thread idleThreadManager(removeIdleThreads);
+   idleThreadManager.detach();
 
    while (serverRunning)
    {
       /////////////////////////////////////////////////////////////////////////
       // ignore errors here... because only information message
-      // https://linux.die.net/man/3/printf
       printf("Waiting for connections...\n");
 
       /////////////////////////////////////////////////////////////////////////
       // ACCEPTS CONNECTION SETUP
-      // blocking, might have an accept-error on ctrl+c
+      // Blocking, might have an accept error on Ctrl+C (if SIGINT received)
       addrlen = sizeof(struct sockaddr_in);
-
-
+      
+      // Use select or fcntl (non-blocking) to handle interrupt gracefully
       new_socket = accept(create_socket, (struct sockaddr *)&cliaddress, &addrlen);
-      if (new_socket  == -1)
-        {
-            if (serverRunning)
-            {
-                perror("accept error");
-            }
-            continue; // Skip and continue accepting connections
-        }
+      if (new_socket == -1)
+      {
+         if (serverRunning)
+         {
+               perror("accept error");
+         }
+         continue; // Skip and continue accepting connections
+      }
 
       /////////////////////////////////////////////////////////////////////////
       // START CLIENT
-      // ignore printf error handling
       printf("Client connected from %s:%d...\n",
-             inet_ntoa(cliaddress.sin_addr),
-             ntohs(cliaddress.sin_port));
+            inet_ntoa(cliaddress.sin_addr),
+            ntohs(cliaddress.sin_port));
+
       // Add task to the queue
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            taskQueue.push(new_socket);
-        }//lock_guard out of scope, unlocks
-        condition.notify_one(); // Notify one worker thread
-    }
+      {
+         printf("lock taskqueue\n");
+         std::lock_guard<std::mutex> lock(queueMutex);
+         printf("Client added to task list\n");
+         taskQueue.push(new_socket);
+         printf("unlock taskqueue\n");
+      } // lock_guard out of scope, unlocks
 
-    ////////////////////////////////////////////////////////////////////////////
-    // Cleanup
-    close(create_socket);
-    serverRunning = false; // Signal threads to shut down
-    condition.notify_all(); // Wake up all threads
+      // Create more threads if necessary
+      if ((int)taskQueue.size() > availableThreads && activeThreads < MAX_THREAD_POOL_SIZE)
+      {
+         std::lock_guard<std::mutex> lock(threadQueue);
+         int threadsToCreate = std::min(MAX_THREAD_POOL_SIZE - activeThreads, (int)taskQueue.size());
 
-    // Join all threads
-    for (std::thread &t : threadPool)
-    {
-        if (t.joinable())
-        {
-            t.join();
-        }
-    }
+         for (int i = 0; i < threadsToCreate; ++i)
+         {
+               threadPool.emplace_back(threadWorker);
+               ++availableThreads;  // Increment the available thread count
+               printf("1 new thread created\n");
+         }
 
-    printf("Server shut down.\n");
-    return EXIT_SUCCESS;
+         printf("Thread pool expanded: now %d active threads and %d available threads \n", activeThreads.load(), availableThreads.load());
+      }
+
+      // Notify a worker thread to process the task
+      std::cout << "One thread worker will be notified" << std::endl;
+      condition.notify_one(); // Notify one worker thread
+   }
+
+   // Cleanup
+   printf("Server is shutting down...\n");
+   close(create_socket);
+   serverRunning = false;  // Signal threads to shut down
+   condition.notify_all();  // Wake up all threads
+
+   // Join all threads
+   for (std::thread &t : threadPool)
+   {
+      if (t.joinable())
+      {
+         t.join();
+      }
+   }
+
+   printf("Server shut down.\n");
+   return EXIT_SUCCESS;
 }
 
 //====================================================================================================================
@@ -353,6 +390,9 @@ void clientCommunication(void *data)
       }
       *current_socket = -1;
    }
+
+   availableThreads++;
+   activeThreads--;
 }
 
 //====================================================================================================================
@@ -701,38 +741,40 @@ void signalHandler(int sig)
         serverRunning = false;  // Set serverRunning to false to notify threads
         condition.notify_all();  // Wake up all waiting threads
 
-        // Gracefully shut down all active sockets
-        if (new_socket != -1)
+        // Gracefully shut down all active client sockets
         {
-            if (shutdown(new_socket, SHUT_RDWR) == -1)
+            std::lock_guard<std::mutex> lock(queueMutex); // Ensure safe shutdown of connections
+            while (!taskQueue.empty())
             {
-                perror("shutdown new_socket failed");
+                int clientSocket = taskQueue.front();
+                taskQueue.pop();
+                if (clientSocket != -1)
+                {
+                    shutdown(clientSocket, SHUT_RDWR);  // Shutdown client socket communication
+                    close(clientSocket);  // Close the client socket
+                    printf("Client socket closed\n");
+                }
             }
-            if (close(new_socket) == -1)
-            {
-                perror("close new_socket failed");
-            }
-            new_socket = -1;
         }
 
+        // Gracefully shut down the listening socket
         if (create_socket != -1)
         {
-            if (shutdown(create_socket, SHUT_RDWR) == -1)
-            {
-                perror("shutdown create_socket failed");
-            }
-            if (close(create_socket) == -1)
-            {
-                perror("close create_socket failed");
-            }
+            shutdown(create_socket, SHUT_RDWR);  // Stop accepting new connections
+            close(create_socket);  // Close the listening socket
             create_socket = -1;
+            printf("Listening socket shutdown and closed...\n");
         }
+
+        // Indicate that server shutdown is requested
+        abortRequested = 1;
     }
     else
     {
         exit(sig);  // For other signals, perform regular exit
     }
 }
+
 
 
 
@@ -1000,4 +1042,38 @@ std::string getClientIPAddress(int* current_socket)
     char ip_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &(client_addr.sin_addr), ip_str, INET_ADDRSTRLEN);
     return std::string(ip_str);
+}
+
+void removeIdleThreads()
+{
+    while (serverRunning)
+    {
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+         {
+           std::lock_guard<std::mutex> lock(queueMutex);
+           if (taskQueue.empty() && activeThreads + availableThreads > THREAD_POOL_SIZE && availableThreads > 0)
+            {
+                  int threadsToRemove = availableThreads;
+                  if (activeThreads + availableThreads - threadsToRemove < THREAD_POOL_SIZE)
+                     threadsToRemove = activeThreads + availableThreads - THREAD_POOL_SIZE;
+
+                  for (int i = 0; i < threadsToRemove; ++i)
+                  {
+                     condition.notify_one(); // Notify threads to exit
+                  }
+            }
+         }
+        
+    }
+}
+
+std::string trim(const std::string& str)
+{
+    size_t start = str.find_first_not_of(" \r\n\t");  // Find first non-whitespace character
+    size_t end = str.find_last_not_of(" \r\n\t");    // Find last non-whitespace character
+
+    if (start == std::string::npos || end == std::string::npos)
+        return ""; // Return empty string if no non-whitespace characters are found
+
+    return str.substr(start, end - start + 1); // Extract the trimmed string
 }
